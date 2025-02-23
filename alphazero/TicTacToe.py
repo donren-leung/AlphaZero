@@ -11,7 +11,7 @@ class TicTacToeState:
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return (self.state.reshape(-1) == 0).astype(np.bool_)
-    
+
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'TicTacToeState':
         assert self.get_legal_actions()[action], f"action {action} not valid"
         row = action // self.col_count
@@ -24,21 +24,21 @@ class TicTacToeState:
         else:
             self.state[row, col] = player
             return self
-    
+
     # Checks if a move that's just been made results in a win for that player
     def check_win(self, action: int) -> bool:
         state = self.state
         row = action // self.col_count
         col = action % self.col_count
         player = state[row, col]
-    
+
         return (
             np.sum(state[row, :]) == player * self.col_count
             or np.sum(state[:, col]) == player * self.row_count
             or np.sum(np.diag(state)) == player * self.row_count
             or np.sum(np.diag(np.fliplr(state))) == player * self.row_count
         )
-    
+
     def get_value_and_terminated(self, action: int):
         if self.check_win(action):
             return 1, True
@@ -48,7 +48,7 @@ class TicTacToeState:
 
     def __str__(self) -> str:
         return str(self.state)
-    
+
     def __copy__(self) -> 'TicTacToeState':
         return TicTacToeState(np.copy(self.state))
 
@@ -57,7 +57,7 @@ class TicTacToeGame:
         self.row_count: int = 3
         self.col_count: int = 3
         self.action_size: int = self.row_count * self.col_count
-        
+
         if state is None:
             self.state = self.get_initial_state()
         else:
@@ -68,16 +68,16 @@ class TicTacToeGame:
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions()
-    
+
     def make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)
-      
+
     def check_win(self, action: int) -> bool:
         return self.state.check_win(action)
-    
+
     def get_value_and_terminated(self, action: int):
         return self.state.get_value_and_terminated(action)
-    
+
     def get_opponent(self, player: int) -> int:
         return -player
 

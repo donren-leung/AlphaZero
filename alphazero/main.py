@@ -1,6 +1,6 @@
 import numpy as np
 from TicTacToe import TicTacToeGame
-from MCTS import MCTS_Instance
+from MCTS import MCTS_Factory, MCTS_Instance
 
 import argparse
 import logging
@@ -27,11 +27,16 @@ def human_gamelogic(move_legalities, curr_player) -> int:
             continue
         return action
 
-def main(args):
+def main(args) -> None:
+    MCTS_factory = MCTS_Factory(args.rollouts)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
+        MCTS_factory.set_debug_state(True)
 
-    position = np.asarray([[1, 0, 0], [0, -1, 0], [0, 0, 0]])
+    if args.exploration is not None:
+        MCTS_factory.set_exploration_param(args.exploration)
+
+    # position = np.asarray([[1, 0, 0], [0, -1, 0], [0, 0, 0]])
     game = TicTacToeGame()
 
     curr_player = 1
@@ -54,7 +59,7 @@ def main(args):
         print("legal moves", [i for i in range(game.action_size) if move_legalities[i]])
 
         if curr_player in computer_players:
-            mcts_instance = MCTS_Instance(args.rollouts, game.state, curr_player)
+            mcts_instance = MCTS_factory.make_instance(game.state, curr_player)
             result = mcts_instance.search()
 
             action = result.best_action
@@ -72,11 +77,11 @@ def main(args):
         if terminated:
             print(game)
             if value == 1:
-                print(f"Human player {curr_player} won!")
+                print(f"Player {curr_player} won!")
             else:
                 print("Draw")
             break
-        
+
         curr_player = game.get_opponent(curr_player)
         print()
 
@@ -90,19 +95,22 @@ if __name__ == "__main__":
                        help='Player goes first')
     group.add_argument('--s', '--2', '--second', dest='second', action='store_true',
                        help='Player goes second')
-    
+
     group.add_argument('--h', '--both-human', dest='both_human', action='store_true',
                        help='Both Players are human (self-play)')
     group.add_argument('--c', '--both-comp', dest='both_comp', action='store_true',
                        help='Both Players are PC (self-play)')
 
-    
+
     parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, default=4000,
                         help='Number of MCTS rollouts per move for the PC (default: %(default)s)')
-    
+
+    parser.add_argument('-e', '--exploration', dest='exploration', type=float,
+                        help='Exploration parameter for MCTS node selection')
+
     parser.add_argument('--d', '--debug', dest='debug', action='store_true', help='Enable debug mode')
 
 
     # Parse the command-line arguments
-    args = parser.parse_args()    
+    args = parser.parse_args()
     main(args)

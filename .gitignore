@@ -165,5 +165,5 @@ cython_debug/
 output/*
 .ruff_cache/*
 
-*profile
+*profile*
 *log*
