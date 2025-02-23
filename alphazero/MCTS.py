@@ -10,14 +10,14 @@ from TicTacToe import TicTacToeGame, TicTacToeState
 import numpy as np
 
 class MCTS_Factory():
-    DEFAULT_EXPLORATION_PARAM = 2
+    DEFAULT_EXPLORATION_PARAM = 1.41
 
     def __init__(self, rollouts: int) -> None:
         self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
-        self.debug = False
+        self.debug = 0
         self.rollouts = rollouts
 
-    def set_debug_state(self, debug: bool) -> None:
+    def set_debug_state(self, debug: int) -> None:
         self.debug = debug
 
     def set_exploration_param(self, exploration: float) -> None:
@@ -28,14 +28,14 @@ class MCTS_Factory():
 
 @dataclass
 class MCTS_Result():
-    action_stats: list[tuple[float, float, int, int]]
+    action_stats: list[tuple[float, float, float, int, int]]
     best_action: int
 
     def __str__(self):
         return "\n".join(
             f"{pct_visits:>6.1%} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})"
-            f" | move {move}{" <<<" if move == self.best_action else ""}"
-            for pct_visits, avg_value, visits, move in self.action_stats
+            f" | ucb {ucb:.3f} | move {move}{" <<<" if move == self.best_action else ""}"
+            for pct_visits, avg_value, ucb, visits, move in self.action_stats
         )
 
 class MCTS_Instance():
@@ -45,28 +45,28 @@ class MCTS_Instance():
         assert player == -1 or player == 1
         self.rollouts = rollouts
         self.root = Node(None, None, None, state, player, MCTS_factory=MCTS_factory)
+        self.MCTS_factory = MCTS_factory
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
-        if all(self.root.state.get_legal_actions()):
-            self.root.expand_first()
-        else:
-            self.root.expand()
+        self.root.expand()
 
         for _ in range(self.rollouts):
             self.one_round_mcts()
 
         logging.debug("finished MCTS")
-        self.root.print_children(limit=2)
+        if self.MCTS_factory.debug >= 1:
+            self.root.print_children(limit=4)
 
         children_details = [(
-                round(child.visits / self.rollouts, 2),
-                round(child.value_sum / child.visits, 2),
+                child.visits / self.rollouts,
+                child.value_sum / child.visits,
+                self.root.get_ucb(child),
                 child.visits,
                 child.parent_action if child.parent_action is not None else -1)
             for child in self.root.children
         ]
-        best_action = max(children_details, key=lambda x: x[0])[3]
+        best_action = max(children_details, key=lambda x: x[0])[4]
         return MCTS_Result(children_details, best_action)
 
     def one_round_mcts(self) -> None:
@@ -76,11 +76,10 @@ class MCTS_Instance():
         # If not currently a leaf node, traverse to child of current
         # which maximises UCB score.
         curr = self.root
-        curr.print_children(0)
+        if self.MCTS_factory.debug >= 2:
+            curr.print_children(0)
         while not curr.is_leafnode():
-            scores = [child.ucb_score(curr.visits) for child in curr.children]
-            best_idx = np.argmax(scores)
-            curr = curr.children[best_idx]
+            curr = curr.select()
 
         # (Now at a leaf node)
         # Expansion
@@ -140,13 +139,24 @@ class Node():
 
         return len(self.children) == 0
 
-    def ucb_score(self, parent_visits: float) -> float:
-        assert self.parent is not None, "Should not calculate ucb on parent."
-        if self.visits == 0:
-            return math.inf
-        return (-self.value_sum / self.visits +
-                self.MCTS_factory.exploration * math.sqrt(math.log(parent_visits) / self.visits)
-        )
+    def select(self):
+        best_child = None
+        best_ucb = -np.inf
+
+        for child in self.children:
+            ucb = self.get_ucb(child)
+            if ucb > best_ucb:
+                best_child = child
+                best_ucb = ucb
+
+        return best_child
+
+    def get_ucb(self, child: Node) -> float:
+        assert child is not None
+        if child.visits == 0:
+            return np.inf
+        q = 1 - (child.value_sum / child.visits + 1) / 2
+        return q + self.MCTS_factory.exploration * math.sqrt(math.log(self.visits) / child.visits)
 
     def expand(self) -> None:
         assert len(self.children) == 0, f"Node already has children: {self.children}."
@@ -156,20 +166,6 @@ class Node():
         curr_state = self.state
         valid_actions = curr_state.get_legal_actions()
         for action_idx in np.flatnonzero(valid_actions):
-            new_state = curr_state.get_next_state(action_idx, self.player)
-
-            value, terminated = new_state.get_value_and_terminated(action_idx)
-            if not terminated:
-                value = None
-            else:
-                value = value * -1
-
-            self.children.append(Node(self, action_idx, value, new_state, -1 * self.player,
-                                      MCTS_factory=self.MCTS_factory))
-
-    def expand_first(self) -> None:
-        curr_state = self.state
-        for action_idx in [0, 1, 4]:
             new_state = curr_state.get_next_state(action_idx, self.player)
 
             value, terminated = new_state.get_value_and_terminated(action_idx)
@@ -196,10 +192,10 @@ class Node():
             curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
             value, terminated = curr_state.get_value_and_terminated(next_action)
             if terminated:
-                if self.MCTS_factory.debug:
+                if self.MCTS_factory.debug >= 2:
                     logging.debug(f"==terminated: v {value} p {curr_player}")
                     logging.debug("\n" + str(curr_state))
-                return value * curr_player
+                return value if curr_player == self.player else -value
 
             curr_player = -1 * curr_player
 
@@ -214,10 +210,23 @@ class Node():
             return
         if depth == 0:
             logging.debug("@@@ printing children")
-        logging.debug(f"{'\t' * depth} {self.parent_action} {self.value_sum} {self.visits} {self.value}")
 
+        if self.parent is None:
+            visits = self.visits
+            avg_value = self.value_sum / (self.visits + 0.01)
+            logging.debug(f"{'\t' * depth} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})")
+        else:
+            pct_visits = self.visits / (self.parent.visits + 0.01)
+            visits = self.visits
+            avg_value = self.value_sum / (self.visits + 0.01)
+            ucb = self.parent.get_ucb(self)
+            move = self.parent_action
+
+            logging.debug(f"{'\t' * depth}"
+                        f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})"
+                        f" | ucb {ucb:.3f}")
         if depth >= limit:
             return
 
         for child in self.children:
-            child.print_children(depth + 1)
+            child.print_children(depth + 1, limit=limit)

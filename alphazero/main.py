@@ -31,7 +31,7 @@ def main(args) -> None:
     MCTS_factory = MCTS_Factory(args.rollouts)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
-        MCTS_factory.set_debug_state(True)
+        MCTS_factory.set_debug_state(args.debug)
 
     if args.exploration is not None:
         MCTS_factory.set_exploration_param(args.exploration)
@@ -102,13 +102,14 @@ if __name__ == "__main__":
                        help='Both Players are PC (self-play)')
 
 
-    parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, default=4000,
+    parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, default=1000,
                         help='Number of MCTS rollouts per move for the PC (default: %(default)s)')
 
     parser.add_argument('-e', '--exploration', dest='exploration', type=float,
                         help='Exploration parameter for MCTS node selection')
 
-    parser.add_argument('--d', '--debug', dest='debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--d', '--debug', dest='debug', choices=[1, 2], type=int,
+                        help='Enable debug mode')
 
 
     # Parse the command-line arguments
