@@ -8,11 +8,11 @@ import sys
 
 np.__version__
 
-# action -1 to quit
+# Return action -1 to quit
 def human_gamelogic(move_legalities, curr_player) -> int:
     while True:
         try:
-            cmd = input(f"Player {curr_player}:").strip()
+            cmd = input(f"Human (player {curr_player}):").strip()
             action = int(cmd)
         except ValueError:
             if cmd == "q" or cmd == "":
@@ -36,21 +36,29 @@ def main(args):
 
     curr_player = 1
     if args.first:
-        computer_player = -1
+        print("Human selected to go first.")
+        computer_players = [-1]
+    elif args.second:
+        print("Computer selected to go first.")
+        computer_players = [1]
+    elif args.both_human:
+        print("Human self-play selected.")
+        computer_players = []
     else:
-        computer_player = 1
+        print("Computer self-play selected.")
+        computer_players = [-1, 1]
 
     while True:
         print(game, flush=True)
         move_legalities = game.get_legal_actions()
         print("legal moves", [i for i in range(game.action_size) if move_legalities[i]])
 
-        if curr_player == computer_player:
+        if curr_player in computer_players:
             mcts_instance = MCTS_Instance(args.rollouts, game.state, curr_player)
             result = mcts_instance.search()
 
             action = result.best_action
-            print(f"Computer: {action}.\nThe visits were:")
+            print(f"Computer (player {curr_player}): {action}.\nThe visits were:")
             print(result)
         else:
             action = human_gamelogic(move_legalities, curr_player)
@@ -64,7 +72,7 @@ def main(args):
         if terminated:
             print(game)
             if value == 1:
-                print(f"Player {curr_player} won!")
+                print(f"Human player {curr_player} won!")
             else:
                 print("Draw")
             break
@@ -74,14 +82,27 @@ def main(args):
 
 if __name__ == "__main__":
     # Create the parser
-    parser = argparse.ArgumentParser(description='TicTacToe against MCTS')
+    parser = argparse.ArgumentParser(description='TicTacToe with MCTS')
 
-    # Add a flag argument. The action "store_true" means it will be set to True if the flag is provided.
-    parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, required=True, help='Number of rollouts per move')
-    parser.add_argument('--f', '--first', dest='first', action='store_true', help='Player goes first')
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--f', '--1', '--first', dest='first', action='store_true',
+                       help='Player goes first')
+    group.add_argument('--s', '--2', '--second', dest='second', action='store_true',
+                       help='Player goes second')
+    
+    group.add_argument('--h', '--both-human', dest='both_human', action='store_true',
+                       help='Both Players are human (self-play)')
+    group.add_argument('--c', '--both-comp', dest='both_comp', action='store_true',
+                       help='Both Players are PC (self-play)')
+
+    
+    parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, default=4000,
+                        help='Number of MCTS rollouts per move for the PC (default: %(default)s)')
+    
     parser.add_argument('--d', '--debug', dest='debug', action='store_true', help='Enable debug mode')
 
+
     # Parse the command-line arguments
-    args = parser.parse_args()
-    
+    args = parser.parse_args()    
     main(args)
