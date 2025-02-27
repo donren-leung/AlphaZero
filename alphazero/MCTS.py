@@ -2,7 +2,10 @@ from __future__ import annotations
 import logging
 import math
 import random
+import time
+
 from copy import copy
+from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
 from TicTacToe import TicTacToeGame, TicTacToeState
@@ -33,7 +36,7 @@ class MCTS_Result():
 
     def __str__(self):
         return "\n".join(
-            f"{pct_visits:>6.1%} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})"
+            f"{pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
             f" | ucb {ucb:.3f} | move {move}{" <<<" if move == self.best_action else ""}"
             for pct_visits, avg_value, ucb, visits, move in self.action_stats
         )
@@ -44,23 +47,30 @@ class MCTS_Instance():
                  MCTS_factory: MCTS_Factory) -> None:
         assert player == -1 or player == 1
         self.rollouts = rollouts
-        self.root = Node(None, None, None, state, player, MCTS_factory=MCTS_factory)
+        self.root = Node(None, None, state, player, MCTS_factory=MCTS_factory)
         self.MCTS_factory = MCTS_factory
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
         self.root.expand()
+        executor = ProcessPoolExecutor(max_workers=8)
+        pending_simulations: dict[Future, Node] = {}
 
         for _ in range(self.rollouts):
-            self.one_round_mcts()
+            self.one_round_mcts(executor, pending_simulations)
+            time.sleep(1e-8)
+
+        for future in as_completed(pending_simulations):
+            result = future.result()
+            pending_simulations[future].backpropogate(*result)
 
         logging.debug("finished MCTS")
         if self.MCTS_factory.debug >= 1:
-            self.root.print_children(limit=4)
+            self.root.print_children(limit=3)
 
         children_details = [(
-                child.visits / self.rollouts,
-                child.value_sum / child.visits,
+                child.visits / self.rollouts if self.rollouts else math.nan,
+                (child.value_sum / child.visits) if child.visits else math.nan,
                 self.root.get_ucb(child),
                 child.visits,
                 child.parent_action if child.parent_action is not None else -1)
@@ -69,7 +79,21 @@ class MCTS_Instance():
         best_action = max(children_details, key=lambda x: x[0])[4]
         return MCTS_Result(children_details, best_action)
 
-    def one_round_mcts(self) -> None:
+    def one_round_mcts(self, executor: ProcessPoolExecutor,
+                       pending_simulations: dict[Future, Node]) -> None:
+        # Backpropogation (of previous simulations)
+        # Update scores and tally up the tree
+        # _dict = [s for s in pending_simulations]
+        finished_sims = [sim for sim in pending_simulations if sim.done()]
+
+        for finished_sim in finished_sims:
+            result = finished_sim.result()
+            simulating_node = pending_simulations.pop(finished_sim)
+            simulating_node.backpropogate(*result)
+
+        # if not any([f.done() for f in _dict]):
+        #     logging.debug(f"there are {sum([1 for s in _dict if not s.done()])} sims pending")
+        
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
         # children that aren't made yet.)
@@ -89,23 +113,26 @@ class MCTS_Instance():
         # rollout from a random child.
         # If the game is ended at this point, obviously there can't be children
         # so just "simulate" and record the value.
-        if curr.visits == 0 or curr.is_terminal:
+        if curr.visits == 0 or curr.value is not None:
             simulating_node = curr
+
+            # Simulation of an unvisited or terminal node
+            # Take random actions until terminated
+            value = simulating_node.simulate(executor, pending_simulations)
+            if value is not None:
+                simulating_node.backpropogate(value, False)
         else:
             curr.expand()
             simulating_node = random.choice(curr.children)
 
-        # Simulation
-        # Take random actions until terminated
-        value = simulating_node.simulate()
-
-        # Backpropogation
-        # Update scores and tally up the tree
-        simulating_node.backpropogate(value)
+            # Simulation of a child
+            # Take random actions until terminated
+            _ = simulating_node.simulate(executor, pending_simulations)
+            assert _ is None
 
 class Node():
     def __init__(self, parent: 'Node' | None, parent_action: int | None,
-                 value: int | None, state: TicTacToeState, player: int,
+                 state: TicTacToeState, player: int,
                  *, MCTS_factory: MCTS_Factory) -> None:
         assert (
             (parent is None and parent_action is None) or
@@ -118,26 +145,37 @@ class Node():
         self.state = state                  # Game representation
         self.player = player                # Player to move
 
-        # If terminal node don't simulate, just return the value
-        self.value: int | None = value
+        # If terminal node, assign value on first simulation and return it
+        self.value: float | None = None
         self.value_sum: float = 0
         self.visits: int = 0
         self.MCTS_factory = MCTS_factory
 
-    @property
-    def is_terminal(self) -> bool:
-        return self.value is not None
-
     def is_leafnode(self) -> bool:
-        if self.visits <= 1 and self.parent is not None:
-            assert len(self.children) == 0, f"Visits = {self.visits}, node should not be expanded yet."
-        elif self.is_terminal:
-            return True
-        else:
-            assert len(self.children) > 0, \
-                f"Visits = {self.visits}, node has no children but node should have been expanded (check if it's terminal)."
+        # root
+        # normal node with 1 or less visits (assert 0 children)
+        # normal node with self.value not none (terminal node)
+        # normal node (deductively, 2 or more visits -- expanded so no.)
 
-        return len(self.children) == 0
+        # root // false because of special first case
+        # normal with children // false
+        # normal without children // true
+        if len(self.children) > 0:
+            return False
+        else:
+            # assert self.visits <= 1 or self.value is not None, \
+            #     f"action: {self.parent_action}, visits: {self.visits}, value: {self.value}"
+            return True
+
+        # if self.visits <= 1 and self.parent is not None:
+        #     assert len(self.children) == 0, f"Visits = {self.visits}, node should not be expanded yet."
+        # elif self.value is not None:
+        #     return True
+        # else:
+        #     assert len(self.children) > 0, \
+        #         f"Visits = {self.visits}, node has no children but node should have been expanded (check if it's terminal)."
+
+        # return len(self.children) == 0
 
     def select(self):
         best_child = None
@@ -155,55 +193,50 @@ class Node():
         assert child is not None
         if child.visits == 0:
             return np.inf
-        q = 1 - (child.value_sum / child.visits + 1) / 2
-        return q + self.MCTS_factory.exploration * math.sqrt(math.log(self.visits) / child.visits)
+        return ((child.value_sum / child.visits + 1) / 2) + \
+            self.MCTS_factory.exploration * math.sqrt(math.log(self.visits) / child.visits)
 
     def expand(self) -> None:
         assert len(self.children) == 0, f"Node already has children: {self.children}."
-        if self.parent is not None:
-            assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
+        # if self.parent is not None:
+        #     assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
 
         curr_state = self.state
         valid_actions = curr_state.get_legal_actions()
         for action_idx in np.flatnonzero(valid_actions):
             new_state = curr_state.get_next_state(action_idx, self.player)
-
-            value, terminated = new_state.get_value_and_terminated(action_idx)
-            if not terminated:
-                value = None
-            else:
-                value = value * -1
-
-            self.children.append(Node(self, action_idx, value, new_state, -1 * self.player,
+            self.children.append(Node(self, action_idx, new_state, -1 * self.player,
                                       MCTS_factory=self.MCTS_factory))
 
-    def simulate(self) -> float:
+    def simulate(self, executor: ProcessPoolExecutor, pending_simulations: dict[Future, Node]) -> float | None:
         assert self.parent_action is not None
-        if self.is_terminal:
-            assert self.value is not None
-            return float(self.value)
-
-        curr_state = copy(self.state)
+        if self.value is not None:
+            return self.value
+        
+        curr_state = self.state
         curr_player = self.player
-        while True:
-            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
-            next_action = random.choice(valid_action_indexes)
 
-            curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
-            value, terminated = curr_state.get_value_and_terminated(next_action)
-            if terminated:
-                if self.MCTS_factory.debug >= 2:
-                    logging.debug(f"==terminated: v {value} p {curr_player}")
-                    logging.debug("\n" + str(curr_state))
-                return value if curr_player == self.player else -value
+        if self.visits == 0:
+            # Include parent action to find out if this node is terminal
+            future = executor.submit(simulate_, curr_state, curr_player, self.parent_action, self.MCTS_factory.debug)
+            # return simulate_(curr_state, curr_player, self.parent_action, self.MCTS_factory.debug)
+        else:
+            future = executor.submit(simulate_, curr_state, curr_player, None, self.MCTS_factory.debug)
+            # return simulate_(curr_state, curr_player, None, self.MCTS_factory.debug)
+        pending_simulations[future] = self
 
-            curr_player = -1 * curr_player
+        return None
 
-    def backpropogate(self, value: float) -> None:
+    def backpropogate(self, value: float, set_value: bool) -> None:
         self.value_sum += value
         self.visits += 1
+        if set_value:
+            if (self.value is not None):
+                # Already set, check consistency for a terminal node
+                assert value == self.value, "Inconsistent value for terminal node."
+            self.value = value
         if self.parent is not None:
-            self.parent.backpropogate(-1 * value)
+            self.parent.backpropogate(-1 * value, False)
 
     def print_children(self, depth: int=0, *, limit: int=1) -> None:
         if not self.MCTS_factory.debug:
@@ -214,7 +247,7 @@ class Node():
         if self.parent is None:
             visits = self.visits
             avg_value = self.value_sum / (self.visits + 0.01)
-            logging.debug(f"{'\t' * depth} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})")
+            logging.debug(f"{'\t' * depth} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})")
         else:
             pct_visits = self.visits / (self.parent.visits + 0.01)
             visits = self.visits
@@ -223,10 +256,44 @@ class Node():
             move = self.parent_action
 
             logging.debug(f"{'\t' * depth}"
-                        f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {-avg_value:+.2f} ({-avg_value/2 + 0.5:>6.1%})"
+                        f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
                         f" | ucb {ucb:.3f}")
         if depth >= limit:
             return
 
         for child in self.children:
             child.print_children(depth + 1, limit=limit)
+
+# Returns a value, with respect to the node that called the simulation.
+# The value is the expected score for the parent node taking an action which
+# resulted in the calling-node.
+def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int | None, debug: int=0) -> tuple[float, bool]:
+    # time.sleep(0.001)
+    if parent_action is not None:
+        # First visit, find out if the game is already over
+        value, terminated = curr_state.get_value_and_terminated(parent_action)
+        if terminated:
+            # Game is ended for the current player, return 0/+1 (for the parent who made the action).
+            return value, True
+
+    simulating_player = curr_player
+    curr_state = copy(curr_state) # necessary?
+    while True:
+        valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
+        next_action = random.choice(valid_action_indexes)
+
+        curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
+        value, terminated = curr_state.get_value_and_terminated(next_action)
+        curr_player = -1 * curr_player
+
+        if terminated:
+            # if debug >= 2:
+            #     logging.debug(f"==terminated: v {-value} for cp {curr_player} sp {simulating_player}")
+            #     logging.debug("\n" + str(curr_state))
+
+            # Game is ended for the current player.
+            # If the player-to-move was the calling-node player,
+            # return 0/+1 (for the parent who made the action to the calling-node)
+            # otherwise, flip.
+            return (value if curr_player == simulating_player else -value, False)
+

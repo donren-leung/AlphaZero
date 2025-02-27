@@ -37,6 +37,7 @@ def main(args) -> None:
         MCTS_factory.set_exploration_param(args.exploration)
 
     # position = np.asarray([[1, 0, 0], [0, -1, 0], [0, 0, 0]])
+    # game = TicTacToeGame(position)
     game = TicTacToeGame()
 
     curr_player = 1
@@ -108,7 +109,7 @@ if __name__ == "__main__":
     parser.add_argument('-e', '--exploration', dest='exploration', type=float,
                         help='Exploration parameter for MCTS node selection')
 
-    parser.add_argument('--d', '--debug', dest='debug', choices=[1, 2], type=int,
+    parser.add_argument('-d', '--debug', dest='debug', choices=[1, 2], type=int,
                         help='Enable debug mode')
 
 
