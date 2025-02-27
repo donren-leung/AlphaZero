@@ -15,10 +15,11 @@ import numpy as np
 class MCTS_Factory():
     DEFAULT_EXPLORATION_PARAM = 1.41
 
-    def __init__(self, rollouts: int) -> None:
+    def __init__(self, rollouts: int, multi_sims: int) -> None:
         self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
         self.debug = 0
         self.rollouts = rollouts
+        self.multi_sims = multi_sims
 
     def set_debug_state(self, debug: int) -> None:
         self.debug = debug
@@ -27,7 +28,7 @@ class MCTS_Factory():
         self.exploration = exploration
 
     def make_instance(self, *args) -> MCTS_Instance:
-        return MCTS_Instance(self.rollouts, *args, MCTS_factory=self)
+        return MCTS_Instance(self.rollouts, self.multi_sims, *args, MCTS_factory=self)
 
 @dataclass
 class MCTS_Result():
@@ -43,12 +44,13 @@ class MCTS_Result():
 
 class MCTS_Instance():
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, state: TicTacToeState, player: int, *,
+    def __init__(self, rollouts: int, multi_sims: int, state: TicTacToeState, player: int, *,
                  MCTS_factory: MCTS_Factory) -> None:
         assert player == -1 or player == 1
         self.rollouts = rollouts
         self.root = Node(None, None, state, player, MCTS_factory=MCTS_factory)
         self.MCTS_factory = MCTS_factory
+        self.multi_sims = multi_sims
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
@@ -58,7 +60,7 @@ class MCTS_Instance():
 
         for _ in range(self.rollouts):
             self.one_round_mcts(executor, pending_simulations)
-            time.sleep(1e-8)
+            time.sleep(0.003)
 
         for future in as_completed(pending_simulations):
             result = future.result()
@@ -69,7 +71,7 @@ class MCTS_Instance():
             self.root.print_children(limit=3)
 
         children_details = [(
-                child.visits / self.rollouts if self.rollouts else math.nan,
+                child.visits / self.root.visits if self.rollouts else math.nan,
                 (child.value_sum / child.visits) if child.visits else math.nan,
                 self.root.get_ucb(child),
                 child.visits,
@@ -118,16 +120,18 @@ class MCTS_Instance():
 
             # Simulation of an unvisited or terminal node
             # Take random actions until terminated
-            value = simulating_node.simulate(executor, pending_simulations)
-            if value is not None:
-                simulating_node.backpropogate(value, False)
+            res_tuple = simulating_node.simulate(executor, pending_simulations,
+                                                    target_sims=self.multi_sims)
+            if res_tuple is not None:
+                simulating_node.backpropogate(*res_tuple, False)
         else:
             curr.expand()
             simulating_node = random.choice(curr.children)
 
             # Simulation of a child
             # Take random actions until terminated
-            _ = simulating_node.simulate(executor, pending_simulations)
+            _ = simulating_node.simulate(executor, pending_simulations,
+                                                    target_sims=self.multi_sims)
             assert _ is None
 
 class Node():
@@ -208,35 +212,44 @@ class Node():
             self.children.append(Node(self, action_idx, new_state, -1 * self.player,
                                       MCTS_factory=self.MCTS_factory))
 
-    def simulate(self, executor: ProcessPoolExecutor, pending_simulations: dict[Future, Node]) -> float | None:
+    def simulate(self, executor: ProcessPoolExecutor, pending_simulations: dict[Future, Node],
+                 *, target_sims: int) -> tuple[int, float] | None:
         assert self.parent_action is not None
         if self.value is not None:
-            return self.value
+            return (target_sims, self.value)
         
         curr_state = self.state
         curr_player = self.player
 
         if self.visits == 0:
             # Include parent action to find out if this node is terminal
-            future = executor.submit(simulate_, curr_state, curr_player, self.parent_action, self.MCTS_factory.debug)
+            future = executor.submit(simulate_,
+                                     curr_state,
+                                     curr_player,
+                                     self.parent_action,
+                                     target_sims=target_sims,
+                                     debug=self.MCTS_factory.debug)
             # return simulate_(curr_state, curr_player, self.parent_action, self.MCTS_factory.debug)
         else:
-            future = executor.submit(simulate_, curr_state, curr_player, None, self.MCTS_factory.debug)
+            future = executor.submit(simulate_, curr_state, curr_player, None,
+                                     target_sims=target_sims,
+                                     debug=self.MCTS_factory.debug)
             # return simulate_(curr_state, curr_player, None, self.MCTS_factory.debug)
         pending_simulations[future] = self
 
         return None
 
-    def backpropogate(self, value: float, set_value: bool) -> None:
+    def backpropogate(self, visits: int, value: float, set_value: bool) -> None:
         self.value_sum += value
-        self.visits += 1
+        self.visits += visits
         if set_value:
             if (self.value is not None):
                 # Already set, check consistency for a terminal node
                 assert value == self.value, "Inconsistent value for terminal node."
-            self.value = value
+            else:
+                self.value = value
         if self.parent is not None:
-            self.parent.backpropogate(-1 * value, False)
+            self.parent.backpropogate(visits, -1 * value, False)
 
     def print_children(self, depth: int=0, *, limit: int=1) -> None:
         if not self.MCTS_factory.debug:
@@ -267,33 +280,44 @@ class Node():
 # Returns a value, with respect to the node that called the simulation.
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
-def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int | None, debug: int=0) -> tuple[float, bool]:
-    # time.sleep(0.001)
+def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int | None,
+              *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
+    time.sleep(0.001)
+    target_sims = 1
     if parent_action is not None:
         # First visit, find out if the game is already over
         value, terminated = curr_state.get_value_and_terminated(parent_action)
         if terminated:
             # Game is ended for the current player, return 0/+1 (for the parent who made the action).
-            return value, True
+            return (target_sims, target_sims * value, True)
+        else:
+            assert len(np.flatnonzero(curr_state.get_legal_actions())) > 0
 
-    simulating_player = curr_player
-    curr_state = copy(curr_state) # necessary?
-    while True:
-        valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
-        next_action = random.choice(valid_action_indexes)
+    origin_curr_state = copy(curr_state)
+    origin_curr_player = curr_player
 
-        curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
-        value, terminated = curr_state.get_value_and_terminated(next_action)
-        curr_player = -1 * curr_player
+    value = 0.0
+    for i in range(target_sims):
+        curr_player = origin_curr_player
+        curr_state = copy(origin_curr_state)
+        while True:
+            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
+            next_action = random.choice(valid_action_indexes)
 
-        if terminated:
-            # if debug >= 2:
-            #     logging.debug(f"==terminated: v {-value} for cp {curr_player} sp {simulating_player}")
-            #     logging.debug("\n" + str(curr_state))
+            curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
+            value, terminated = curr_state.get_value_and_terminated(next_action)
+            curr_player = -1 * curr_player
 
-            # Game is ended for the current player.
-            # If the player-to-move was the calling-node player,
-            # return 0/+1 (for the parent who made the action to the calling-node)
-            # otherwise, flip.
-            return (value if curr_player == simulating_player else -value, False)
+            if terminated:
+                # if debug >= 2:
+                #     logging.debug(f"==terminated: v {-value} for cp {curr_player} sp {simulating_player}")
+                #     logging.debug("\n" + str(curr_state))
 
+                # Game is ended for the current player.
+                # If the player-to-move was the calling-node player,
+                # return 0/+1 (for the parent who made the action to the calling-node)
+                # otherwise, flip.
+                value += (value if curr_player == origin_curr_player else -value)
+                break
+
+    return (target_sims, value, False)

@@ -28,7 +28,7 @@ def human_gamelogic(move_legalities, curr_player) -> int:
         return action
 
 def main(args) -> None:
-    MCTS_factory = MCTS_Factory(args.rollouts)
+    MCTS_factory = MCTS_Factory(args.rollouts, args.multi_sims)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
         MCTS_factory.set_debug_state(args.debug)
@@ -108,6 +108,9 @@ if __name__ == "__main__":
 
     parser.add_argument('-e', '--exploration', dest='exploration', type=float,
                         help='Exploration parameter for MCTS node selection')
+    
+    parser.add_argument('-m', '--multi', dest='multi_sims', type=int, default=1,
+                        help='How many simulations to make in simulation phase (default: %(default)s)')
 
     parser.add_argument('-d', '--debug', dest='debug', choices=[1, 2], type=int,
                         help='Enable debug mode')
