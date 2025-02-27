@@ -55,16 +55,16 @@ class MCTS_Instance():
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
         self.root.expand()
-        executor = ProcessPoolExecutor(max_workers=8)
-        pending_simulations: dict[Future, Node] = {}
+        with ProcessPoolExecutor(max_workers=8) as executor:
+            pending_simulations: dict[Future, Node] = {}
 
-        for _ in range(self.rollouts):
-            self.one_round_mcts(executor, pending_simulations)
-            time.sleep(0.003)
+            for _ in range(self.rollouts):
+                self.one_round_mcts(executor, pending_simulations)
+                time.sleep(1e-5)
 
-        for future in as_completed(pending_simulations):
-            result = future.result()
-            pending_simulations[future].backpropogate(*result)
+            for future in as_completed(pending_simulations):
+                result = future.result()
+                pending_simulations[future].backpropogate(*result)
 
         logging.debug("finished MCTS")
         if self.MCTS_factory.debug >= 1:
@@ -240,6 +240,9 @@ class Node():
         return None
 
     def backpropogate(self, visits: int, value: float, set_value: bool) -> None:
+        # assert abs(value) <= 1, value
+        # assert abs(visits) <= 1, visits
+
         self.value_sum += value
         self.visits += visits
         if set_value:
@@ -282,8 +285,7 @@ class Node():
 # resulted in the calling-node.
 def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int | None,
               *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
-    time.sleep(0.001)
-    target_sims = 1
+    # time.sleep(0.001)
     if parent_action is not None:
         # First visit, find out if the game is already over
         value, terminated = curr_state.get_value_and_terminated(parent_action)
@@ -296,7 +298,7 @@ def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int |
     origin_curr_state = copy(curr_state)
     origin_curr_player = curr_player
 
-    value = 0.0
+    value_sum = 0.0
     for i in range(target_sims):
         curr_player = origin_curr_player
         curr_state = copy(origin_curr_state)
@@ -317,7 +319,9 @@ def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int |
                 # If the player-to-move was the calling-node player,
                 # return 0/+1 (for the parent who made the action to the calling-node)
                 # otherwise, flip.
-                value += (value if curr_player == origin_curr_player else -value)
+                value_sum += (value if curr_player == origin_curr_player else -value)
                 break
 
-    return (target_sims, value, False)
+    # assert abs(value_sum) <= 1, value_sum
+    # assert abs(target_sims) <= 1, target_sims
+    return (target_sims, value_sum, False)
