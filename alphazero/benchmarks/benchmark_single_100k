@@ -1,0 +1,78 @@
+CMD:
+$ git checkout 1f0d1086838114ba8f97f30f7e38e411c531c66a
+$ echo 'q' > input && timeit python3 main.py --2 -r 100000 -e 1.4 < 'input' > log2
+
+--> run 1
+Computer selected to go first.
+[[0 0 0]
+ [0 0 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6, 7, 8]
+Computer (player 1): 4.
+The visits were:
+  7.6% (7587) visits | E(value): +0.12 ( 56.2%) | ucb 0.616 | move 0
+  5.5% (5478) visits | E(value): +0.10 ( 55.2%) | ucb 0.616 | move 1
+  7.4% (7370) visits | E(value): +0.12 ( 56.1%) | ucb 0.616 | move 2
+  5.7% (5734) visits | E(value): +0.11 ( 55.4%) | ucb 0.616 | move 3
+ 46.5% (46475) visits | E(value): +0.19 ( 59.4%) | ucb 0.616 | move 4 <<<
+  6.0% (6022) visits | E(value): +0.11 ( 55.5%) | ucb 0.616 | move 5
+  7.4% (7353) visits | E(value): +0.12 ( 56.1%) | ucb 0.616 | move 6
+  6.7% (6731) visits | E(value): +0.12 ( 55.8%) | ucb 0.616 | move 7
+  7.2% (7250) visits | E(value): +0.12 ( 56.1%) | ucb 0.617 | move 8
+
+[[0 0 0]
+ [0 1 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 5, 6, 7, 8]
+Human (player -1):Quitting game...
+real 4.49 user 5.63 sys 0.03
+--> run 2
+Computer selected to go first.
+[[0 0 0]
+ [0 0 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6, 7, 8]
+Computer (player 1): 4.
+The visits were:
+  6.8% (6825) visits | E(value): +0.12 ( 55.8%) | ucb 0.616 | move 0
+  6.4% (6378) visits | E(value): +0.11 ( 55.6%) | ucb 0.616 | move 1
+  7.2% (7166) visits | E(value): +0.12 ( 56.0%) | ucb 0.616 | move 2
+  6.7% (6682) visits | E(value): +0.12 ( 55.8%) | ucb 0.616 | move 3
+ 46.0% (45985) visits | E(value): +0.19 ( 59.4%) | ucb 0.616 | move 4 <<<
+  5.9% (5881) visits | E(value): +0.11 ( 55.4%) | ucb 0.616 | move 5
+  7.7% (7703) visits | E(value): +0.12 ( 56.2%) | ucb 0.616 | move 6
+  6.4% (6438) visits | E(value): +0.11 ( 55.7%) | ucb 0.616 | move 7
+  6.9% (6942) visits | E(value): +0.12 ( 55.9%) | ucb 0.616 | move 8
+
+[[0 0 0]
+ [0 1 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 5, 6, 7, 8]
+Human (player -1):Quitting game...
+real 4.42 user 5.57 sys 0.02
+--> run 3
+Computer selected to go first.
+[[0 0 0]
+ [0 0 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6, 7, 8]
+Computer (player 1): 4.
+The visits were:
+  7.0% (6990) visits | E(value): +0.12 ( 55.9%) | ucb 0.616 | move 0
+  5.3% (5349) visits | E(value): +0.10 ( 55.1%) | ucb 0.616 | move 1
+  7.4% (7445) visits | E(value): +0.12 ( 56.1%) | ucb 0.616 | move 2
+  6.1% (6135) visits | E(value): +0.11 ( 55.5%) | ucb 0.616 | move 3
+ 46.7% (46715) visits | E(value): +0.19 ( 59.4%) | ucb 0.616 | move 4 <<<
+  6.3% (6252) visits | E(value): +0.11 ( 55.6%) | ucb 0.616 | move 5
+  7.5% (7462) visits | E(value): +0.12 ( 56.1%) | ucb 0.616 | move 6
+  6.3% (6257) visits | E(value): +0.11 ( 55.6%) | ucb 0.616 | move 7
+  7.4% (7395) visits | E(value): +0.12 ( 56.1%) | ucb 0.616 | move 8
+
+[[0 0 0]
+ [0 1 0]
+ [0 0 0]]
+legal moves [0, 1, 2, 3, 5, 6, 7, 8]
+Human (player -1):Quitting game...
+real 4.37 user 5.53 sys 0.00
+Average:
+real 4.427 user 5.577 sys 0.017
