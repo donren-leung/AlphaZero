@@ -1,9 +1,13 @@
+from games.GameStateBase import GameStateBase
+from games.GameBase import GameBase
+
 import numpy as np
 from numpy.typing import NDArray
 
 type State = NDArray[np.int8]
 
-class TicTacToeState:
+class TicTacToeState(GameStateBase):
+    __slots__ = ["row_count", "col_count"]
     def __init__(self, state: State):
         self.state = state
         self.row_count = state.shape[0]
@@ -52,19 +56,17 @@ class TicTacToeState:
     def __copy__(self) -> 'TicTacToeState':
         return TicTacToeState(np.copy(self.state))
 
-class TicTacToeGame:
-    def __init__(self, state: State | None=None) -> None:
-        self.row_count: int = 3
-        self.col_count: int = 3
-        self.action_size: int = self.row_count * self.col_count
+class TicTacToeGame(GameBase[TicTacToeState]):
+    row_count: int = 3
+    col_count: int = 3
+    action_size: int = row_count * col_count
 
-        if state is None:
-            self.state = self.get_initial_state()
-        else:
-            self.state = TicTacToeState(state)
+    def __init__(self, state: TicTacToeState | None = None) -> None:
+        super().__init__(state)
 
-    def get_initial_state(self) -> TicTacToeState:
-        return TicTacToeState(np.zeros((self.row_count, self.col_count), dtype=np.int8))
+    @classmethod
+    def get_initial_state(cls) -> TicTacToeState:
+        return TicTacToeState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions()
@@ -80,6 +82,9 @@ class TicTacToeGame:
 
     def get_opponent(self, player: int) -> int:
         return -player
+
+    def __repr__(self):
+        return "TicTacToe"
 
     def __str__(self) -> str:
         return self.state.__str__()

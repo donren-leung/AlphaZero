@@ -7,12 +7,17 @@ import time
 from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
+# from typing import Generic, TypeVar
 
-from TicTacToe import TicTacToeGame, TicTacToeState
+from games.GameBase import GameBase
+from games.GameStateBase import GameStateBase
 
 import numpy as np
 
-class MCTS_Factory():
+# GameStateT = TypeVar('GameStateT', bound=GameStateBase)
+# GameBaseT = TypeVar('GameBaseT', bound=GameBase[GameStateT])
+
+class MCTS_Factory(object):
     DEFAULT_EXPLORATION_PARAM = 1.41
 
     def __init__(self, rollouts: int, multi_sims: int) -> None:
@@ -42,9 +47,9 @@ class MCTS_Result():
             for pct_visits, avg_value, ucb, visits, move in self.action_stats
         )
 
-class MCTS_Instance():
+class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, multi_sims: int, state: TicTacToeState, player: int, *,
+    def __init__(self, rollouts: int, multi_sims: int, state: GameStateBase, player: int, *,
                  MCTS_factory: MCTS_Factory) -> None:
         assert player == -1 or player == 1
         self.rollouts = rollouts
@@ -55,7 +60,7 @@ class MCTS_Instance():
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
         self.root.expand()
-        with ProcessPoolExecutor(max_workers=8) as executor:
+        with ProcessPoolExecutor(max_workers=15) as executor:
             pending_simulations: dict[Future, Node] = {}
 
             for _ in range(self.rollouts):
@@ -95,7 +100,7 @@ class MCTS_Instance():
 
         # if not any([f.done() for f in _dict]):
         #     logging.debug(f"there are {sum([1 for s in _dict if not s.done()])} sims pending")
-        
+
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
         # children that aren't made yet.)
@@ -136,7 +141,7 @@ class MCTS_Instance():
 
 class Node():
     def __init__(self, parent: 'Node' | None, parent_action: int | None,
-                 state: TicTacToeState, player: int,
+                 state: GameStateBase, player: int,
                  *, MCTS_factory: MCTS_Factory) -> None:
         assert (
             (parent is None and parent_action is None) or
@@ -217,7 +222,7 @@ class Node():
         assert self.parent_action is not None
         if self.value is not None:
             return (target_sims, self.value)
-        
+
         curr_state = self.state
         curr_player = self.player
 
@@ -283,7 +288,7 @@ class Node():
 # Returns a value, with respect to the node that called the simulation.
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
-def simulate_(curr_state: TicTacToeState, curr_player: int, parent_action: int | None,
+def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int | None,
               *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
     # time.sleep(0.001)
     if parent_action is not None:

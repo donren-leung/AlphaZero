@@ -1,12 +1,12 @@
-import numpy as np
-from TicTacToe import TicTacToeGame
-from MCTS import MCTS_Factory, MCTS_Instance
-
 import argparse
 import logging
 import sys
 
-np.__version__
+from games.TicTacToe import TicTacToeGame
+from games.ConnectFour import ConnectFourGame
+from MCTS import MCTS_Factory, MCTS_Instance
+
+import numpy as np
 
 # Return action -1 to quit
 def human_gamelogic(move_legalities, curr_player) -> int:
@@ -38,7 +38,13 @@ def main(args) -> None:
 
     # position = np.asarray([[1, 0, 0], [0, -1, 0], [0, 0, 0]])
     # game = TicTacToeGame(position)
-    game = TicTacToeGame()
+    match args.game:
+        case "tictac":
+            game = TicTacToeGame()
+        case "c4":
+            game = ConnectFourGame()
+        case _:
+            raise ValueError("Unknown game '{args.game}'")
 
     curr_player = 1
     if args.first:
@@ -88,8 +94,10 @@ def main(args) -> None:
 
 if __name__ == "__main__":
     # Create the parser
-    parser = argparse.ArgumentParser(description='TicTacToe with MCTS')
+    parser = argparse.ArgumentParser(description='TicTacToe/C4 with MCTS')
 
+    parser.add_argument('game', choices=['tictac', 'c4'], type=str,
+                        help='Play tictactoe or connect four')
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--f', '--1', '--first', dest='first', action='store_true',
@@ -108,7 +116,7 @@ if __name__ == "__main__":
 
     parser.add_argument('-e', '--exploration', dest='exploration', type=float,
                         help='Exploration parameter for MCTS node selection')
-    
+
     parser.add_argument('-m', '--multi', dest='multi_sims', type=int, default=1,
                         help='How many simulations to make in simulation phase (default: %(default)s)')
 
