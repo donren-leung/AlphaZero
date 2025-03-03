@@ -2,9 +2,10 @@ import argparse
 import logging
 import sys
 
-from games.TicTacToe import TicTacToeGame
-from games.ConnectFour import ConnectFourGame
-from MCTS import MCTS_Factory, MCTS_Instance
+from games.TicTacToe import TicTacToeGame, TicTacToeState
+from games.ConnectFour import ConnectFourGame, ConnectFourState
+from games.GameBase import GameBase
+from MCTS_multichild import MCTS_Factory, MCTS_Instance
 
 import numpy as np
 
@@ -36,8 +37,7 @@ def main(args) -> None:
     if args.exploration is not None:
         MCTS_factory.set_exploration_param(args.exploration)
 
-    # position = np.asarray([[1, 0, 0], [0, -1, 0], [0, 0, 0]])
-    # game = TicTacToeGame(position)
+    game: GameBase
     match args.game:
         case "tictac":
             game = TicTacToeGame()
@@ -45,6 +45,9 @@ def main(args) -> None:
             game = ConnectFourGame()
         case _:
             raise ValueError("Unknown game '{args.game}'")
+
+    # state = TicTacToeState(np.asarray([[1, 0, 0], [-1, -1, 0], [0, 0, 0]]))
+    # game = TicTacToeGame(state)
 
     curr_player = 1
     if args.first:

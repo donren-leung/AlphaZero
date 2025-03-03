@@ -27,6 +27,11 @@ class GameBase(Generic[GameStateT], ABC):
     def get_legal_actions(self) -> NDArray[bool_]:
         ...
 
+    @property
+    @abstractmethod
+    def action_size(self) -> int:
+        ...
+
     @abstractmethod
     def make_move(self, action: int, player: int) -> None:
         ...
