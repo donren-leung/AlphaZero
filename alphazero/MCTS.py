@@ -23,6 +23,7 @@ class MCTS_Factory(object):
         self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
         self.debug = 0
         self.rollouts = rollouts
+        # When simulating a node, how many times to simulate?
         self.multi_sims = multi_sims
         self.processes = processes
 
@@ -53,17 +54,22 @@ class MCTS_Instance(object):
     def __init__(self, rollouts: int, multi_sims: int, processes: int,
                  *, MCTS_factory: MCTS_Factory, **kwargs,
                  ) -> None:
-        player = int(kwargs['player'])
+        game: GameBase = kwargs['game']
+        assert issubclass(game.__class__, GameBase)
+
+        player = game.current_player
         assert player == -1 or player == 1
-        state = kwargs['state']
+
+        state = game.state
         assert issubclass(state.__class__, GameStateBase)
+
         assert processes >= 1
 
-        self.rollouts = rollouts
         self.root = Node(None, None, state, player, MCTS_factory=MCTS_factory)
-        self.MCTS_factory = MCTS_factory
+        self.rollouts = rollouts
         self.multi_sims = multi_sims
         self.processes = processes
+        self.MCTS_factory = MCTS_factory
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
@@ -228,7 +234,7 @@ class Node(object):
         #     assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
 
         curr_state = self.state
-        valid_actions = curr_state.get_legal_actions()
+        valid_actions = curr_state.get_legal_actions(self.player)
         for action_idx in np.flatnonzero(valid_actions):
             new_state = curr_state.get_next_state(action_idx, self.player)
             self.children.append(Node(self, action_idx, new_state, -1 * self.player,
@@ -315,7 +321,7 @@ def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int | 
             # Game is ended for the current player, return 0/+1 (for the parent who made the action).
             return (target_sims, target_sims * value, True)
         else:
-            assert len(np.flatnonzero(curr_state.get_legal_actions())) > 0
+            assert len(np.flatnonzero(curr_state.get_legal_actions(curr_player))) > 0
 
     origin_curr_state = copy(curr_state)
     origin_curr_player = curr_player
@@ -325,7 +331,7 @@ def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int | 
         curr_player = origin_curr_player
         curr_state = copy(origin_curr_state)
         while True:
-            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
+            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions(curr_player))
             next_action = random.choice(valid_action_indexes)
 
             curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)

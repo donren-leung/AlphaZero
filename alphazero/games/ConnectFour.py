@@ -14,7 +14,7 @@ class ConnectFourState(GameStateBase):
         self.col_count = state.shape[1]
         self.in_a_row = 4
 
-    def get_legal_actions(self) -> NDArray[np.bool_]:
+    def get_legal_actions(self, player: int) -> NDArray[np.bool_]:
         return (self.state[0] == 0).astype(np.bool_)
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ConnectFourState':
@@ -28,45 +28,43 @@ class ConnectFourState(GameStateBase):
             self.state[row, action] = player
             return self
 
-    # Checks if a move that's just been made results in a win for that player
-    def check_win(self, action: int) -> bool:
-        if action == None:
-            return False
-
-        non_zero_indices = np.where(self.state[:, action] != 0)[0]
-        if non_zero_indices.size == 0:
-            # No pieces in this column, so no win is possible here.
-            return False
-
-        row = np.min(np.where(self.state[:, action] != 0))
-        column = action
-        player = self.state[row][column]
-
-        def count(offset_row, offset_column):
-            for i in range(1, self.in_a_row):
-                r = row + offset_row * i
-                c = action + offset_column * i
-                if (
-                    r < 0
-                    or r >= self.row_count
-                    or c < 0
-                    or c >= self.col_count
-                    or self.state[r][c] != player
-                ):
-                    return i - 1
-            return self.in_a_row - 1
-
-        return (
-            count(1, 0) >= self.in_a_row - 1 # vertical
-            or (count(0, 1) + count(0, -1)) >= self.in_a_row - 1 # horizontal
-            or (count(1, 1) + count(-1, -1)) >= self.in_a_row - 1 # top left diagonal
-            or (count(1, -1) + count(-1, 1)) >= self.in_a_row - 1 # top right diagonal
-        )
-
     def get_value_and_terminated(self, action: int):
-        if self.check_win(action):
+        player: int
+        # Checks if a move that's just been made results in a win for that player
+        def check_win(self, action: int) -> bool:
+            nonlocal player
+
+            non_zero_indices = np.where(self.state[:, action] != 0)[0]
+            assert non_zero_indices.size > 0, f"no pieces in column/{action=}"
+
+            row = np.min(np.where(self.state[:, action] != 0))
+            column = action
+            player = self.state[row][column]
+
+            def count(offset_row, offset_column):
+                for i in range(1, self.in_a_row):
+                    r = row + offset_row * i
+                    c = action + offset_column * i
+                    if (
+                        r < 0
+                        or r >= self.row_count
+                        or c < 0
+                        or c >= self.col_count
+                        or self.state[r][c] != player
+                    ):
+                        return i - 1
+                return self.in_a_row - 1
+
+            return (
+                count(1, 0) >= self.in_a_row - 1 # vertical
+                or (count(0, 1) + count(0, -1)) >= self.in_a_row - 1 # horizontal
+                or (count(1, 1) + count(-1, -1)) >= self.in_a_row - 1 # top left diagonal
+                or (count(1, -1) + count(-1, 1)) >= self.in_a_row - 1 # top right diagonal
+            )
+
+        if check_win(self, action):
             return 1, True
-        elif not np.any(self.get_legal_actions()):
+        elif not np.any(self.get_legal_actions(player)):
             return 0, True
         return 0, False
 
@@ -90,19 +88,16 @@ class ConnectFourGame(GameBase[ConnectFourState]):
         return ConnectFourState(np.zeros((cls.row_count, cls.column_count), dtype=np.int8))
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        return self.state.get_legal_actions()
+        return self.state.get_legal_actions(self.current_player)
 
-    def make_move(self, action: int, player: int) -> None:
+    def _make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)
 
-    def check_win(self, action: int) -> bool:
-        return self.state.check_win(action)
+    # def check_win(self, action: int) -> bool:
+    #     return self.state.check_win(action)
 
     def get_value_and_terminated(self, action: int):
         return self.state.get_value_and_terminated(action)
-
-    def get_opponent(self, player: int) -> int:
-        return -player
 
     def __repr__(self) -> str:
         return "ConnectFour"

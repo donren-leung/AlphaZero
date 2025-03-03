@@ -2,10 +2,11 @@ import argparse
 import logging
 import sys
 
-from games.TicTacToe import TicTacToeGame, TicTacToeState
-from games.ConnectFour import ConnectFourGame, ConnectFourState
+from games.TicTacToe import TicTacToeGame
+from games.ConnectFour import ConnectFourGame
 from games.GameBase import GameBase
-from MCTS_multichild import MCTS_Factory, MCTS_Instance
+# from MCTS import MCTS_Factory
+from MCTS_multichild import MCTS_Factory
 
 import numpy as np
 
@@ -65,12 +66,12 @@ def main(args) -> None:
 
     while True:
         print(game, flush=True)
+        curr_player = game.current_player
         move_legalities = game.get_legal_actions()
         print("legal moves", [i for i in range(game.action_size) if move_legalities[i]])
 
         if curr_player in computer_players:
-            mcts_instance = MCTS_factory.make_instance(state=game.state,
-                                                        player=curr_player)
+            mcts_instance = MCTS_factory.make_instance(game=game)
             result = mcts_instance.search()
 
             action = result.best_action
@@ -93,7 +94,7 @@ def main(args) -> None:
                 print("Draw")
             break
 
-        curr_player = game.get_opponent(curr_player)
+        # curr_player = game.get_opponent(curr_player)
         print()
 
 if __name__ == "__main__":

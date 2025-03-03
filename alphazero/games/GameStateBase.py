@@ -11,20 +11,20 @@ class GameStateBase(ABC):
         self.state = state
 
     @abstractmethod
-    def get_legal_actions(self) -> NDArray[bool_]:
+    def get_legal_actions(self, player: int) -> NDArray[bool_]:
         ...
 
     @abstractmethod
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'GameStateBase':
         ...
 
-    @abstractmethod
-    def check_win(self, action: int) -> bool:
-        """
-        Checks whether an action that's just been made (resulting in current
-        game state) results in a win for the player who made that action.
-        """
-        ...
+    # @abstractmethod
+    # def check_win(self, action: int) -> bool:
+    #     """
+    #     Checks whether an action that's just been made (resulting in current
+    #     game state) results in a win for the player who made that action.
+    #     """
+    #     ...
 
     @abstractmethod
     def get_value_and_terminated(self, action: int) -> tuple[int, bool]:

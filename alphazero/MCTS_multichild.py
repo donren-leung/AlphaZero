@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from games.GameBase import GameBase
 from games.GameStateBase import GameStateBase
 
-from viztracer import log_sparse
+# from viztracer import log_sparse
 import numpy as np
 
 class MCTS_Factory(object):
@@ -19,7 +19,6 @@ class MCTS_Factory(object):
     exploration = DEFAULT_EXPLORATION_PARAM
 
     def __init__(self, rollouts: int, multi_sims: int, processes: int) -> None:
-        self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
         self.debug = 0
         self.rollouts = rollouts
         # When simulating a node, how many times to simulate?
@@ -55,18 +54,22 @@ class MCTS_Instance(object):
     def __init__(self, rollouts: int, multi_sims: int, processes: int,
                  *, MCTS_factory: MCTS_Factory, **kwargs,
                  ) -> None:
-        player = int(kwargs['player'])
+        game: GameBase = kwargs['game']
+        assert issubclass(game.__class__, GameBase)
+
+        player = game.current_player
         assert player == -1 or player == 1
-        state = kwargs['state']
+
+        state = game.state
         assert issubclass(state.__class__, GameStateBase)
+
         assert processes >= 1
 
-        self.rollouts = rollouts
         self.root = Node(None, None, state, player)
-        self.MCTS_factory = MCTS_factory
+        self.rollouts = rollouts
         self.multi_sims = multi_sims
         self.processes = processes
-
+        self.MCTS_factory = MCTS_factory
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
@@ -138,16 +141,19 @@ class MCTS_Instance(object):
                               target_sims=self.multi_sims)
 
             # Wait for all children simulations to be completed
-            futures = [future for future in as_completed(pending_simulations)]
-            visits_and_values = []
-            for future in futures:
+            visits_and_values: list[tuple[int, float]] = []
+            for future in as_completed(pending_simulations):
                 node = pending_simulations.pop(future)
                 result = future.result()
+                # Store just the (visits, values) slice for aggregation, but backprop with full result
                 visits_and_values.append(result[:2])
                 node.backpropogate(*result, stop_at_node=node.parent)
 
             if curr.parent is not None:
-                curr.parent.backpropogate(*[sum(x) for x in zip(*visits_and_values)], False)
+                total_visits = sum(visits for visits, _ in visits_and_values)
+                total_values = sum(values for _, values in visits_and_values)
+                curr.parent.backpropogate(total_visits, total_values, False)
+
             return
 
 class Node(object):
@@ -208,7 +214,7 @@ class Node(object):
         #     assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
 
         curr_state = self.state
-        valid_actions = curr_state.get_legal_actions()
+        valid_actions = curr_state.get_legal_actions(self.player)
         for action_idx in np.flatnonzero(valid_actions):
             new_state = curr_state.get_next_state(action_idx, self.player)
             self.children.append(Node(self, action_idx, new_state, -1 * self.player))
@@ -293,7 +299,7 @@ def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
         curr_player = origin_curr_player
         curr_state = copy(origin_curr_state)
         while True:
-            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
+            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions(curr_player))
             next_action = random.choice(valid_action_indexes)
 
             curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)
