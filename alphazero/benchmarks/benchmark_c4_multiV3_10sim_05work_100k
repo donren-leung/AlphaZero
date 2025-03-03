@@ -1,0 +1,90 @@
+git checkout 59c2ee3d3f3f97d09516fb084f6236183f4398aa && \
+echo q > input && timeit python3 main.py c4 --2 -r 10000 -e 2 -m 10 -p 5 < input \
+> benchmarks/benchmark_c4_multiV3_10sim_05work_100k
+
+--> run 1
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 5.
+The visits were:
+  0.5% ( 460) visits | E(value): +0.02 ( 51.2%) | ucb 0.828 | move 0
+  3.2% (3220) visits | E(value): +0.10 ( 55.0%) | ucb 0.669 | move 1
+ 11.2% (11210) visits | E(value): +0.17 ( 58.6%) | ucb 0.650 | move 2
+ 20.8% (20850) visits | E(value): +0.27 ( 63.6%) | ucb 0.683 | move 3
+ 27.6% (27570) visits | E(value): +0.14 ( 57.1%) | ucb 0.612 | move 4
+ 31.6% (31630) visits | E(value): +0.09 ( 54.3%) | ucb 0.582 | move 5 <<<
+  5.1% (5060) visits | E(value): +0.05 ( 52.3%) | ucb 0.619 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 1 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 12.09 user 68.98 sys 0.98
+--> run 2
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 5.
+The visits were:
+  0.4% ( 370) visits | E(value): -0.01 ( 49.7%) | ucb 0.850 | move 0
+  2.5% (2550) visits | E(value): +0.11 ( 55.5%) | ucb 0.689 | move 1
+ 10.1% (10090) visits | E(value): +0.14 ( 57.0%) | ucb 0.638 | move 2
+ 19.1% (19110) visits | E(value): +0.28 ( 63.8%) | ucb 0.687 | move 3
+ 26.1% (26100) visits | E(value): +0.16 ( 57.9%) | ucb 0.621 | move 4
+ 29.1% (29130) visits | E(value): +0.09 ( 54.6%) | ucb 0.586 | move 5 <<<
+ 12.7% (12650) visits | E(value): +0.02 ( 51.1%) | ucb 0.571 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 1 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 11.65 user 66.63 sys 0.84
+--> run 3
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 5.
+The visits were:
+  0.4% ( 430) visits | E(value): -0.06 ( 47.2%) | ucb 0.799 | move 0
+  3.2% (3240) visits | E(value): +0.09 ( 54.4%) | ucb 0.663 | move 1
+ 10.8% (10810) visits | E(value): +0.13 ( 56.7%) | ucb 0.633 | move 2
+ 21.2% (21180) visits | E(value): +0.27 ( 63.7%) | ucb 0.684 | move 3
+ 27.5% (27520) visits | E(value): +0.14 ( 57.1%) | ucb 0.612 | move 4
+ 31.4% (31350) visits | E(value): +0.09 ( 54.4%) | ucb 0.583 | move 5 <<<
+  5.5% (5470) visits | E(value): +0.01 ( 50.4%) | ucb 0.595 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 1 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 11.87 user 67.67 sys 0.99
+Average:
+real 11.870 user 67.760 sys 0.937

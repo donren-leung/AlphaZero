@@ -5,7 +5,7 @@ import sys
 from games.TicTacToe import TicTacToeGame, TicTacToeState
 from games.ConnectFour import ConnectFourGame, ConnectFourState
 from games.GameBase import GameBase
-from MCTS import MCTS_Factory, MCTS_Instance
+from MCTS_multichild import MCTS_Factory, MCTS_Instance
 
 import numpy as np
 

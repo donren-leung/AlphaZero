@@ -2,7 +2,6 @@ from __future__ import annotations
 import logging
 import math
 import random
-import time
 
 from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
@@ -19,12 +18,13 @@ class MCTS_Factory(object):
     debug = 0
     exploration = DEFAULT_EXPLORATION_PARAM
 
-    def __init__(self, rollouts: int, multi_sims: int) -> None:
+    def __init__(self, rollouts: int, multi_sims: int, processes: int) -> None:
         self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
         self.debug = 0
         self.rollouts = rollouts
         # When simulating a node, how many times to simulate?
         self.multi_sims = multi_sims
+        self.processes = processes
 
     def set_debug_state(self, debug: int) -> None:
         self.debug = debug
@@ -34,10 +34,11 @@ class MCTS_Factory(object):
         self.exploration = exploration
         self.__class__.exploration = exploration
 
-    def make_instance(self, *args) -> MCTS_Instance:
-        return MCTS_Instance(self.rollouts, self.multi_sims, *args, MCTS_factory=self)
+    def make_instance(self, **kwargs) -> MCTS_Instance:
+        return MCTS_Instance(self.rollouts, self.multi_sims, self.processes,
+                             MCTS_factory=self, **kwargs)
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class MCTS_Result():
     action_stats: list[tuple[float, float, float, int, int]]
     best_action: int
@@ -51,18 +52,26 @@ class MCTS_Result():
 
 class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, multi_sims: int, state: GameStateBase, player: int, *,
-                 MCTS_factory: MCTS_Factory) -> None:
+    def __init__(self, rollouts: int, multi_sims: int, processes: int,
+                 *, MCTS_factory: MCTS_Factory, **kwargs,
+                 ) -> None:
+        player = int(kwargs['player'])
         assert player == -1 or player == 1
+        state = kwargs['state']
+        assert issubclass(state.__class__, GameStateBase)
+        assert processes >= 1
+
         self.rollouts = rollouts
         self.root = Node(None, None, state, player)
         self.MCTS_factory = MCTS_factory
         self.multi_sims = multi_sims
+        self.processes = processes
+
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
         # self.root.expand()
-        with ProcessPoolExecutor(max_workers=10) as executor:
+        with ProcessPoolExecutor(max_workers=self.processes) as executor:
             pending_simulations: dict[Future[SimulationReturnType], Node] = {}
 
             while self.root.visits <= self.rollouts:
@@ -128,13 +137,28 @@ class MCTS_Instance(object):
                child.simulate(executor, pending_simulations,
                               target_sims=self.multi_sims)
 
-        # Wait for all children simulations to be completed
-        for future in as_completed(pending_simulations):
-            node = pending_simulations.pop(future)
-            result = future.result()
-            node.backpropogate(*result, stop_at_node=node.parent)
+            # Wait for all children simulations to be completed
+            futures = [future for future in as_completed(pending_simulations)]
+            visits_and_values = []
+            for future in futures:
+                node = pending_simulations.pop(future)
+                result = future.result()
+                visits_and_values.append(result[:2])
+                node.backpropogate(*result, stop_at_node=node.parent)
 
-class Node():
+            if curr.parent is not None:
+                curr.parent.backpropogate(*[sum(x) for x in zip(*visits_and_values)], False)
+            return
+
+class Node(object):
+    __slots__ = ["parent",
+                 "parent_action",
+                 "children",
+                 "state",
+                 "player",
+                 "value",
+                 "value_sum",
+                 "visits"]
     def __init__(self, parent: 'Node' | None, parent_action: int | None,
                  state: GameStateBase, player: int) -> None:
         assert (
@@ -220,7 +244,7 @@ class Node():
             else:
                 self.value = single_value
         if self is not stop_at_node and self.parent is not None:
-            self.parent.backpropogate(visits, -1 * total_value, False)
+            self.parent.backpropogate(visits, -1 * total_value, False, stop_at_node=stop_at_node)
 
     def print_children(self, depth: int=0, *, limit: int=1) -> None:
         if depth == 0:

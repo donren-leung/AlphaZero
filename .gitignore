@@ -167,3 +167,6 @@ output/*
 
 *profile*
 *log*
+notebook/
+input
+viztracer*
