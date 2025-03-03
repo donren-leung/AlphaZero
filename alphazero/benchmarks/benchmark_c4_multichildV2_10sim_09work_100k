@@ -1,0 +1,86 @@
+--> run 1
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 3.
+The visits were:
+  2.1% (2110) visits | E(value): -0.00 ( 49.8%) | ucb 0.646 | move 0
+  2.9% (2880) visits | E(value): +0.04 ( 51.8%) | ucb 0.645 | move 1
+  5.3% (5330) visits | E(value): +0.11 ( 55.3%) | ucb 0.646 | move 2
+ 78.9% (78970) visits | E(value): +0.25 ( 62.3%) | ucb 0.647 | move 3 <<<
+  4.8% (4840) visits | E(value): +0.09 ( 54.7%) | ucb 0.644 | move 4
+  3.6% (3650) visits | E(value): +0.07 ( 53.3%) | ucb 0.645 | move 5
+  2.2% (2250) visits | E(value): +0.00 ( 50.0%) | ucb 0.644 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 1 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 9.36 user 46.36 sys 0.76
+--> run 2
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 3.
+The visits were:
+  2.4% (2390) visits | E(value): +0.01 ( 50.4%) | ucb 0.642 | move 0
+  3.7% (3720) visits | E(value): +0.06 ( 53.1%) | ucb 0.642 | move 1
+  5.8% (5820) visits | E(value): +0.11 ( 55.4%) | ucb 0.643 | move 2
+ 77.0% (77050) visits | E(value): +0.24 ( 62.0%) | ucb 0.644 | move 3 <<<
+  5.2% (5190) visits | E(value): +0.10 ( 55.0%) | ucb 0.644 | move 4
+  3.4% (3370) visits | E(value): +0.05 ( 52.6%) | ucb 0.643 | move 5
+  2.5% (2530) visits | E(value): +0.01 ( 50.6%) | ucb 0.641 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 1 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 8.53 user 42.59 sys 0.93
+--> run 3
+Computer selected to go first.
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Computer (player 1): 3.
+The visits were:
+  2.9% (2950) visits | E(value): +0.03 ( 51.7%) | ucb 0.642 | move 0
+  4.2% (4210) visits | E(value): +0.07 ( 53.7%) | ucb 0.641 | move 1
+  5.2% (5190) visits | E(value): +0.09 ( 54.7%) | ucb 0.642 | move 2
+ 77.5% (77480) visits | E(value): +0.24 ( 61.8%) | ucb 0.642 | move 3 <<<
+  3.7% (3720) visits | E(value): +0.06 ( 52.9%) | ucb 0.640 | move 4
+  3.7% (3720) visits | E(value): +0.06 ( 53.0%) | ucb 0.642 | move 5
+  2.7% (2740) visits | E(value): +0.02 ( 50.8%) | ucb 0.638 | move 6
+
+[[0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0]
+ [0 0 0 1 0 0 0]]
+legal moves [0, 1, 2, 3, 4, 5, 6]
+Human (player -1):Quitting game...
+real 8.69 user 43.09 sys 0.87
+Average:
+real 8.860 user 44.013 sys 0.853
