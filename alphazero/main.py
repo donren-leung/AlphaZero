@@ -5,7 +5,7 @@ import sys
 from games.TicTacToe import TicTacToeGame, TicTacToeState
 from games.ConnectFour import ConnectFourGame, ConnectFourState
 from games.GameBase import GameBase
-from MCTS_multichild import MCTS_Factory, MCTS_Instance
+from MCTS import MCTS_Factory, MCTS_Instance
 
 import numpy as np
 
@@ -29,7 +29,7 @@ def human_gamelogic(move_legalities, curr_player) -> int:
         return action
 
 def main(args) -> None:
-    MCTS_factory = MCTS_Factory(args.rollouts, args.multi_sims)
+    MCTS_factory = MCTS_Factory(args.rollouts, args.multi_sims, args.processes)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
         MCTS_factory.set_debug_state(args.debug)
@@ -69,7 +69,8 @@ def main(args) -> None:
         print("legal moves", [i for i in range(game.action_size) if move_legalities[i]])
 
         if curr_player in computer_players:
-            mcts_instance = MCTS_factory.make_instance(game.state, curr_player)
+            mcts_instance = MCTS_factory.make_instance(state=game.state,
+                                                        player=curr_player)
             result = mcts_instance.search()
 
             action = result.best_action
@@ -122,6 +123,9 @@ if __name__ == "__main__":
 
     parser.add_argument('-m', '--multi', dest='multi_sims', type=int, default=1,
                         help='How many simulations to make in simulation phase (default: %(default)s)')
+
+    parser.add_argument('-p', '--processes', dest='processes', type=int, default=1,
+                        help='Number of CPUs to utilise (default: %(default)s)')
 
     parser.add_argument('-d', '--debug', dest='debug', choices=[1, 2], type=int,
                         help='Enable debug mode')

@@ -2,13 +2,11 @@ from __future__ import annotations
 import logging
 import math
 import random
-import time
 
 from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
-# from typing import Generic, TypeVar
-from viztracer import log_sparse
+from time import sleep
 
 from games.GameBase import GameBase
 from games.GameStateBase import GameStateBase
@@ -21,11 +19,12 @@ import numpy as np
 class MCTS_Factory(object):
     DEFAULT_EXPLORATION_PARAM = 1.41
 
-    def __init__(self, rollouts: int, multi_sims: int) -> None:
+    def __init__(self, rollouts: int, multi_sims: int, processes: int) -> None:
         self.exploration: float = self.DEFAULT_EXPLORATION_PARAM
         self.debug = 0
         self.rollouts = rollouts
         self.multi_sims = multi_sims
+        self.processes = processes
 
     def set_debug_state(self, debug: int) -> None:
         self.debug = debug
@@ -33,10 +32,11 @@ class MCTS_Factory(object):
     def set_exploration_param(self, exploration: float) -> None:
         self.exploration = exploration
 
-    def make_instance(self, *args) -> MCTS_Instance:
-        return MCTS_Instance(self.rollouts, self.multi_sims, *args, MCTS_factory=self)
+    def make_instance(self, **kwargs) -> MCTS_Instance:
+        return MCTS_Instance(self.rollouts, self.multi_sims, self.processes,
+                             MCTS_factory=self, **kwargs)
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class MCTS_Result():
     action_stats: list[tuple[float, float, float, int, int]]
     best_action: int
@@ -50,23 +50,30 @@ class MCTS_Result():
 
 class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, multi_sims: int, state: GameStateBase, player: int, *,
-                 MCTS_factory: MCTS_Factory) -> None:
+    def __init__(self, rollouts: int, multi_sims: int, processes: int,
+                 *, MCTS_factory: MCTS_Factory, **kwargs,
+                 ) -> None:
+        player = int(kwargs['player'])
         assert player == -1 or player == 1
+        state = kwargs['state']
+        assert issubclass(state.__class__, GameStateBase)
+        assert processes >= 1
+
         self.rollouts = rollouts
         self.root = Node(None, None, state, player, MCTS_factory=MCTS_factory)
         self.MCTS_factory = MCTS_factory
         self.multi_sims = multi_sims
+        self.processes = processes
 
     # Do MCTS and return the visit counts of the root children
     def search(self) -> MCTS_Result:
         self.root.expand()
-        with ProcessPoolExecutor(max_workers=15) as executor:
+        with ProcessPoolExecutor(max_workers=self.processes) as executor:
             pending_simulations: dict[Future, Node] = {}
 
             for _ in range(self.rollouts):
                 self.one_round_mcts(executor, pending_simulations)
-                time.sleep(1e-5)
+                sleep(1e-5)
 
             for future in as_completed(pending_simulations):
                 result = future.result()
@@ -140,7 +147,16 @@ class MCTS_Instance(object):
                                                     target_sims=self.multi_sims)
             assert _ is None
 
-class Node():
+class Node(object):
+    __slots__ = ["parent",
+                "parent_action",
+                "children",
+                "state",
+                "player",
+                "value",
+                "value_sum",
+                "visits",
+                "MCTS_factory"]
     def __init__(self, parent: 'Node' | None, parent_action: int | None,
                  state: GameStateBase, player: int,
                  *, MCTS_factory: MCTS_Factory) -> None:
@@ -291,7 +307,7 @@ class Node():
 # resulted in the calling-node.
 def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int | None,
               *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
-    # time.sleep(0.001)
+    # sleep(0.001)
     if parent_action is not None:
         # First visit, find out if the game is already over
         value, terminated = curr_state.get_value_and_terminated(parent_action)
