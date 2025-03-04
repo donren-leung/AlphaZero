@@ -7,7 +7,7 @@ from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
-from batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
+from batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
 from games.GameBase import GameBase
 from games.GameStateBase import GameStateBase
 
@@ -103,8 +103,9 @@ class MCTS_Instance(object):
     #     best_action = max(children_details, key=lambda x: x[0])[4]
     #     return MCTS_Result(children_details, best_action)
 
-    def one_round_batch(self) -> tuple[list[Node], NodeBatchRequest] | \
-                                tuple[Node, NodeBatchResponse]:
+    def one_round_batch(self, worker_id: int, thread_id: int) -> \
+                            tuple[list[Node], NodeBatchRequest] | \
+                            tuple[Node, NodeBatchResponse]:
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
         # children that aren't made yet.)
@@ -129,15 +130,20 @@ class MCTS_Instance(object):
         if curr.value is not None:
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value} * {self.MCTS_factory.multi_sims}")
-            return curr, NodeBatchResponse([(self.MCTS_factory.multi_sims,
-                               self.MCTS_factory.multi_sims * curr.value, False)])
+            return curr, NodeBatchResponse(worker_id, thread_id,
+                                           [(self.MCTS_factory.multi_sims,
+                                            self.MCTS_factory.multi_sims * curr.value,
+                                            False)])
         else:
             curr.expand()
-            action_and_state = []
+            actions_and_states = []
             for child in curr.children:
                 assert child.parent_action is not None
-                action_and_state.append((child.parent_action, child.state,))
-            return curr.children, NodeBatchRequest(-1 * curr.player, self.multi_sims, action_and_state)
+                actions_and_states.append((child.parent_action, child.state,))
+            return curr.children, NodeBatchRequest(worker_id, thread_id,
+                                                   -1 * curr.player,
+                                                   self.multi_sims,
+                                                   actions_and_states)
 
 class Node(object):
     __slots__ = ["parent",
@@ -265,7 +271,7 @@ class Node(object):
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
 def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
-              *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
+              *, target_sims: int, debug: int=0) -> SimulationReturnType:
     # Find out if the game is already over
     value, terminated = curr_state.get_value_and_terminated(parent_action)
     if terminated:

@@ -7,6 +7,9 @@ SimulationReturnType = tuple[int, float, bool]
 
 @dataclass(slots=True, frozen=True)
 class NodeBatchRequest:
+    worker_id: int
+    thread_id: int
+
     curr_player: int
     target_sims: int
 
@@ -15,7 +18,9 @@ class NodeBatchRequest:
 
 @dataclass(slots=True, frozen=True)
 class NodeBatchResponse:
-    results: list[SimulationReturnType]
+    worker_id: int
+    thread_id: int
+    results:   list[SimulationReturnType]
 
     def to_tuple(self) -> tuple[int, float, bool]:
         assert len(self.results) == 1
