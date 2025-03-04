@@ -290,8 +290,7 @@ def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
         # Game is ended for the current player, return 0/+1 (for the parent who made the action).
         return (target_sims, target_sims * value, True)
 
-    # TODO: Is copying necessary?
-    origin_curr_state = copy(curr_state)
+    origin_curr_state = curr_state
     origin_curr_player = curr_player
 
     value_sum = 0.0

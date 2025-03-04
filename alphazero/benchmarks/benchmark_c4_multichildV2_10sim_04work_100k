@@ -1,3 +1,7 @@
+git checkout 9c2ab2c80ee3e2cf8fad253b7a671ff36f5f4d29 && \
+echo q > input && timeit python3 main.py c4 --2 -r 100000 -e 2 -m 10 -p 4 < input \
+> benchmarks/benchmark_c4_multichildV2_10sim_04work_100k
+
 --> run 1
 Computer selected to go first.
 [[0 0 0 0 0 0 0]
