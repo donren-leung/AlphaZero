@@ -83,7 +83,7 @@ def main(args) -> None:
                 print("Quitting game...")
                 break
 
-        game.make_move(action, curr_player)
+        game.make_move(action)
         value, terminated = game.get_value_and_terminated(action)
 
         if terminated:

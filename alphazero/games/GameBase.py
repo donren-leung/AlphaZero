@@ -11,7 +11,7 @@ GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 
 class GameBase(Generic[GameStateT], ABC):
     state_cls: Type[GameStateT]
-    __slots__ = ["state", "waiting_for_result", "current_player"]
+    __slots__ = ["state", "action_history", "current_player"]
 
     def __init__(self, state: GameStateT | None = None, starting_player: int=1) -> None:
         if state is None:
@@ -20,8 +20,8 @@ class GameBase(Generic[GameStateT], ABC):
             self.state = state
 
         # For parallel games
-        self.waiting_for_result = False
-        self.current_player = starting_player
+        self.action_history: list[int] = []
+        self.current_player: int = starting_player
 
     @classmethod
     @abstractmethod
@@ -38,8 +38,9 @@ class GameBase(Generic[GameStateT], ABC):
         ...
 
     @final
-    def make_move(self, action: int, player: int) -> None:
-        self._make_move(action, player)
+    def make_move(self, action: int) -> None:
+        self._make_move(action, self.current_player)
+        self.action_history.append(action)
         self._switch_current_player()
 
     @abstractmethod
