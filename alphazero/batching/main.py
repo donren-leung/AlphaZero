@@ -20,21 +20,30 @@ from MCTS_batch import MCTS_Factory, Node, simulate_
 def main() -> None:
     # logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
     game_type = ConnectFourGame
-    MCTS_factory = MCTS_Factory(1000, 10, 15)
+    ROLLOUTS = 400
+    # From each position in the batch, how many times to perform rollout
+    MULTI_SIMS = 5
+    # How many node evaluation worker multi-processes to spawn
+    PROCESSES = 6
+    MCTS_factory = MCTS_Factory(ROLLOUTS, MULTI_SIMS, PROCESSES)
 
+    TARGET_GAME_WORKERS = 2
+    GAME_WORKER_GAMES = 4
+
+    ## Init
+    # CPU or (in the future) GPU
+    pool_type = CPUPool
     target_eval_workers = MCTS_factory.processes
     # eval_workers: list[CPUPool] = []
-    pool_type = CPUPool
 
-    target_game_workers = 1
     game_worker_ps: list[Process] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen()
 
-    # 1 * all game_workers -> all eval_worker
+    # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
     request_queue: mpQueueGen[NodeBatchRequest] = mpQueueGen()
-    # N * all eval_worker -> one game_workers
+    # N quese for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[NodeBatchResponse]] = [mpQueueGen()
-                                                    for _ in range(target_game_workers)]
+                                                    for _ in range(TARGET_GAME_WORKERS)]
 
     for i in range(target_eval_workers):
         eval_worker = pool_type(request_queue, results_queues)
@@ -43,7 +52,7 @@ def main() -> None:
 
     for i, results_queue in enumerate(results_queues):
         game_worker = GameWorker(game_type,
-                                 num_games=15, output_games=all_game_results,
+                                 num_games=4, output_games=all_game_results,
                                  in_queue=results_queue,
                                  out_queue=request_queue,
                                  worker_id=i,

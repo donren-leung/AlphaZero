@@ -20,6 +20,9 @@ GameT = TypeVar('GameT', bound='GameBase')
 T = TypeVar("T")
 
 class mpQueueGen(Generic[T]):
+    """
+    Generic wrapper around the multiprocessing Queue.
+    """
     def __init__(self, *args, **kwargs):
         self._queue = mpQueue(*args, **kwargs)
 
@@ -35,7 +38,7 @@ class mpQueueGen(Generic[T]):
 class GameWorker(Generic[GameT], object):
     """
     A CPU assigned to send batches of nodes to the evaluator for
-    each position for each parallel game of specified game type.
+    each position, for each parallel game of specified game type.
     """
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
@@ -71,16 +74,23 @@ class GameWorker(Generic[GameT], object):
 
         Thread(target=self.daemon_thread, args=[], daemon=True).start()
 
-        for i, thread in enumerate(self.threads):
+        for thread in self.threads:
             thread.start()
 
     def daemon_thread(self) -> None:
+        """
+        'Mailman' thread -- Gets BatchResponses from the MP world and
+        in the local process puts it into the correct per-thread mailbox.
+        """
         while True:
+            # Blocking call to get a BatchResponse from the MP queue.
             response = self.in_queue.get()
             assert response.worker_id == self.worker_id
             assert response.thread_id >= 0 and response.thread_id < len(self.threads)
             assert self.thread_inbox[response.thread_id] is None
 
+            # Open (with mutex) the right thread's mailbox, insert the
+            # received BatchResponse and notify the waiting thread.
             self.inbox_cv[response.thread_id].acquire()
             self.thread_inbox[response.thread_id] = response
             self.inbox_cv[response.thread_id].notify()
@@ -90,6 +100,7 @@ class GameWorker(Generic[GameT], object):
         logging.info(f"thread {thread_id} started")
         while True:
             # Check if game has ended (which can't happen on first move)
+            # Need to make this assumption due to the arguments required.
             if len(game.action_history) == 0:
                 pass
             else:
@@ -98,7 +109,7 @@ class GameWorker(Generic[GameT], object):
                     break
 
             logging.debug(f"thread {thread_id} iteration {len(game.action_history)}: {game.action_history}")
-            # Game after last move is still going, create new MCTS
+            # Game after last move is still going, create new MCTS instance.
             MCTS_instance = self.MCTS_factory.make_instance(game=game)
 
             while MCTS_instance.root.visits < MCTS_instance.rollouts:
@@ -109,12 +120,13 @@ class GameWorker(Generic[GameT], object):
                 node_or_nodes, request = MCTS_instance.one_round_batch(self.worker_id, thread_id)
 
                 if isinstance(request, NodeBatchRequest):
-                    # Send batch
+                    # Send batch request to worker pool.
                     assert isinstance(node_or_nodes, list), node_or_nodes
                     self.out_queue.put(request)
 
-                    # Get the result
+                    # Get or wait (block thread) for the result.
                     self.inbox_cv[thread_id].acquire()
+                    # NOTE: Is this while loop strictly needed??
                     while self.thread_inbox[thread_id] is None:
                         self.inbox_cv[thread_id].wait()
                     response = self.thread_inbox[thread_id]
@@ -136,7 +148,7 @@ class GameWorker(Generic[GameT], object):
                         parent.backpropogate(total_visits, total_values, False)
 
                 else:
-                    # Cached
+                    # Cached result; no request is sent.
                     logging.debug(f"thread {thread_id} (cached) batchresponse")
                     assert(isinstance(node_or_nodes, Node))
                     node_or_nodes.backpropogate(*request.to_tuple())

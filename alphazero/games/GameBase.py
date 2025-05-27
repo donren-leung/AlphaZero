@@ -1,6 +1,6 @@
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Type, final
+from typing import Generic, TypeVar, Type, final, Literal
 
 from games.GameStateBase import GameStateBase
 
@@ -52,7 +52,9 @@ class GameBase(Generic[GameStateT], ABC):
     #     ...
 
     @abstractmethod
-    def get_value_and_terminated(self, action: int):
+    def get_value_and_terminated(self, action: int) -> tuple[Literal[1], Literal[True]] | \
+                                                        tuple[Literal[0], Literal[True]] | \
+                                                        tuple[Literal[0], Literal[False]]:
         ...
 
     @final
