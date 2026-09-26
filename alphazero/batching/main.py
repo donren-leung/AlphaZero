@@ -6,16 +6,16 @@ from multiprocessing import Process
 from queue import Queue
 from threading import Thread, local, Condition
 from typing import Generic, TypeVar, Type
-
-from batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
-from batching.GameWorker import GameWorker, mpQueueGen
-from batching.CPUPool import CPUPool
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
-from games.GameBase import GameBase
-from games.GameStateBase import GameStateBase
-from games.TicTacToe import TicTacToeGame
-from games.ConnectFour import ConnectFourGame
-from MCTS_batch import MCTS_Factory, Node, simulate_
+
+from .NodeBatch import NodeBatchRequest, NodeBatchResponse
+from .GameWorker import GameWorker, mpQueueGen
+from .CPUPool import CPUPool
+from alphazero.games.GameBase import GameBase
+from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.TicTacToe import TicTacToeGame
+from alphazero.games.ConnectFour import ConnectFourGame
+from alphazero.MCTS_batch import MCTS_Factory, Node, simulate_
 
 def main() -> None:
     # logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)

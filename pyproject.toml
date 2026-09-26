@@ -1,5 +1,5 @@
 [project]
-name = "mcts-tictactoe"
+name = "alphazero"
 version = "0.1.0"
 description = ""
 authors = [
@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy (>=2.2.3,<3.0.0)"
-    
 ]
 
 [tool.mypy]

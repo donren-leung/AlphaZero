@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import GameStateBase
 
 # visits, total value, terminal
 SimulationReturnType = tuple[int, float, bool]

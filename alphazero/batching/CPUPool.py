@@ -1,6 +1,6 @@
-from batching.GameWorker import mpQueueGen
-from batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
-from MCTS_batch import simulate_
+from .GameWorker import mpQueueGen
+from .NodeBatch import NodeBatchRequest, NodeBatchResponse
+from alphazero.MCTS_batch import simulate_
 
 class CPUPool(object):
     def __init__(self, inbox: mpQueueGen[NodeBatchRequest],

@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar, Type, final, Literal
 
-from games.GameStateBase import GameStateBase
+from .GameStateBase import GameStateBase
 
 from numpy import int8, bool_
 from numpy.typing import NDArray

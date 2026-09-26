@@ -7,8 +7,8 @@ from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
-from games.GameBase import GameBase
-from games.GameStateBase import GameStateBase
+from alphazero.games.GameBase import GameBase
+from alphazero.games.GameStateBase import GameStateBase
 
 # from viztracer import log_sparse
 import numpy as np

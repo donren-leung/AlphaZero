@@ -8,8 +8,8 @@ from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 from time import sleep
 
-from games.GameBase import GameBase
-from games.GameStateBase import GameStateBase
+from alphazero.games.GameBase import GameBase
+from alphazero.games.GameStateBase import GameStateBase
 
 import numpy as np
 

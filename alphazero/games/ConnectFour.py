@@ -1,5 +1,5 @@
-from games.GameStateBase import GameStateBase
-from games.GameBase import GameBase
+from .GameStateBase import GameStateBase
+from .GameBase import GameBase
 
 import numpy as np
 from numpy.typing import NDArray
