@@ -2,7 +2,7 @@ import logging
 import sys
 
 from math import nan
-from multiprocessing import Queue as mpQueue
+from multiprocessing.context import BaseContext
 from queue import Queue
 from threading import Thread, local, Condition
 from typing import Generic, TypeVar, Type
@@ -23,8 +23,8 @@ class mpQueueGen(Generic[T]):
     """
     Generic wrapper around the multiprocessing Queue.
     """
-    def __init__(self, *args, **kwargs):
-        self._queue = mpQueue(*args, **kwargs)
+    def __init__(self, ctx: BaseContext, *args, **kwargs):
+        self._queue = ctx.Queue(*args, **kwargs)
 
     def put(self, item: T) -> None:
         self._queue.put(item)

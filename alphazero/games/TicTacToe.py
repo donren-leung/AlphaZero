@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
 
@@ -59,9 +61,9 @@ class TicTacToeState(GameStateBase):
         return TicTacToeState(np.copy(self.state))
 
 class TicTacToeGame(GameBase[TicTacToeState]):
-    row_count: int = 3
-    col_count: int = 3
-    action_size: int = row_count * col_count
+    row_count: ClassVar[int] = 3
+    col_count: ClassVar[int] = 3
+    action_size: ClassVar[int] = row_count * col_count
 
     def __init__(self, state: TicTacToeState | None = None) -> None:
         super().__init__(state)

@@ -1,8 +1,10 @@
-from .GameStateBase import GameStateBase
-from .GameBase import GameBase
+from typing import ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
+
+from .GameStateBase import GameStateBase
+from .GameBase import GameBase
 
 type State = NDArray[np.int8]
 
@@ -75,10 +77,10 @@ class ConnectFourState(GameStateBase):
         return ConnectFourState(np.copy(self.state))
 
 class ConnectFourGame(GameBase[ConnectFourState]):
-    row_count: int = 6
-    column_count: int = 7
-    action_size: int = column_count
-    in_a_row: int = 4
+    row_count: ClassVar[int] = 6
+    column_count: ClassVar[int] = 7
+    action_size: ClassVar[int] = column_count
+    in_a_row: ClassVar[int] = 4
 
     def __init__(self, state: ConnectFourState | None=None) -> None:
         super().__init__(state)

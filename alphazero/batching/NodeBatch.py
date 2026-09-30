@@ -13,8 +13,7 @@ class NodeBatchRequest:
     curr_player: int
     target_sims: int
 
-    action_and_state: list[tuple[int, GameStateBase]]
-    # node_hash: list[int]
+    states_and_actions: list[tuple[int, GameStateBase]]
 
 @dataclass(slots=True, frozen=True)
 class NodeBatchResponse:

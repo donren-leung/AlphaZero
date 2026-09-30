@@ -2,7 +2,7 @@ import logging
 import sys
 
 import argparse
-from multiprocessing import Process
+import multiprocessing as mp
 from typing import Type
 
 from alphazero.games.GameBase import GameBase
@@ -12,8 +12,7 @@ from alphazero.MCTS_batch import MCTS_Factory
 
 from .NodeBatch import NodeBatchRequest, NodeBatchResponse
 from .GameWorker import GameWorker, mpQueueGen
-from .CPUPool import CPUPool
-
+from .Pool import PoolFactory, CPU_RandomRollout_Pool
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 
@@ -84,28 +83,33 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def main(game_type: Type[GameBase], ROLLOUTS: int, MULTI_SIMS: int, PROCESSES: int, TARGET_GAME_WORKERS: int, GAME_WORKER_GAMES: int) -> None:
+def main(game_type: Type[GameBase],
+         ROLLOUTS: int,
+         MULTI_SIMS: int,
+         PROCESSES: int,
+         TARGET_GAME_WORKERS: int,
+         GAME_WORKER_GAMES: int) -> None:
     # logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
     ## Init
     # CPU or (in the future) GPU
-    pool_type = CPUPool
+    ctx = mp.get_context("spawn")
+    pool_factory = PoolFactory(CPU_RandomRollout_Pool)
 
     MCTS_factory = MCTS_Factory(ROLLOUTS, MULTI_SIMS, PROCESSES)
     target_eval_workers = MCTS_factory.processes
-    # eval_workers: list[CPUPool] = []
 
-    game_worker_ps: list[Process] = []
-    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen()
+    game_worker_ps: list[mp.context.SpawnProcess] = []
+    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
-    request_queue: mpQueueGen[NodeBatchRequest] = mpQueueGen()
+    request_queue: mpQueueGen[NodeBatchRequest] = mpQueueGen(ctx)
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
-    results_queues: list[mpQueueGen[NodeBatchResponse]] = [mpQueueGen()
+    results_queues: list[mpQueueGen[NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
     for i in range(target_eval_workers):
-        eval_worker = pool_type(request_queue, results_queues)
-        p = Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
+        eval_worker = pool_factory.create_pool(request_queue, results_queues)
+        p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
 
     for i, results_queue in enumerate(results_queues):
@@ -115,7 +119,7 @@ def main(game_type: Type[GameBase], ROLLOUTS: int, MULTI_SIMS: int, PROCESSES: i
                                  out_queue=request_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory)
-        p = Process(target=game_worker.run, name=f"GameWorker_{i}")
+        p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
         game_worker_ps.append(p)
 
     for game_worker_p in game_worker_ps:
@@ -134,4 +138,12 @@ def main(game_type: Type[GameBase], ROLLOUTS: int, MULTI_SIMS: int, PROCESSES: i
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.game_type, args.rollouts, args.multi_sims, args.processes, args.game_workers, args.games_per_worker)
+
+    main(
+        args.game_type,
+        args.rollouts,
+        args.multi_sims,
+        args.processes,
+        args.game_workers,
+        args.games_per_worker,
+    )

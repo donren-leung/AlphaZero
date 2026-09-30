@@ -242,6 +242,9 @@ class Node(object):
     def backpropogate(self, visits: int, total_value: float, terminal: bool,
                       *, stop_at_node: Node | None=None) -> None:
         self.value_sum += total_value
+        # TODO: remove
+        assert isinstance(visits, int) and visits > 0, f"visits must be a positive integer, got {visits=}"
+        
         self.visits += visits
         if terminal:
             single_value = total_value / visits

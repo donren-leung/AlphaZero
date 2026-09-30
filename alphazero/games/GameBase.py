@@ -1,6 +1,6 @@
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Type, final, Literal
+from typing import Generic, TypeVar, ClassVar, Type, final, Literal
 
 from .GameStateBase import GameStateBase
 
@@ -11,6 +11,7 @@ GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 
 class GameBase(Generic[GameStateT], ABC):
     state_cls: Type[GameStateT]
+    action_size: ClassVar[int]
     __slots__ = ["state", "action_history", "current_player"]
 
     def __init__(self, state: GameStateT | None = None, starting_player: int=1) -> None:
@@ -30,11 +31,6 @@ class GameBase(Generic[GameStateT], ABC):
 
     @abstractmethod
     def get_legal_actions(self) -> NDArray[bool_]:
-        ...
-
-    @property
-    @abstractmethod
-    def action_size(self) -> int:
         ...
 
     @final
@@ -66,7 +62,7 @@ class GameBase(Generic[GameStateT], ABC):
         self.current_player = self.get_opponent(self.current_player)
 
     @abstractmethod
-    def __repr__(self):
+    def __repr__(self) -> str:
         ...
 
     def __str__(self) -> str:
