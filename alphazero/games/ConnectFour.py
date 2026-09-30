@@ -78,8 +78,8 @@ class ConnectFourState(GameStateBase):
 
 class ConnectFourGame(GameBase[ConnectFourState]):
     row_count: ClassVar[int] = 6
-    column_count: ClassVar[int] = 7
-    action_size: ClassVar[int] = column_count
+    col_count: ClassVar[int] = 7
+    action_size: ClassVar[int] = col_count
     in_a_row: ClassVar[int] = 4
 
     def __init__(self, state: ConnectFourState | None=None) -> None:
@@ -87,7 +87,7 @@ class ConnectFourGame(GameBase[ConnectFourState]):
 
     @classmethod
     def get_initial_state(cls) -> ConnectFourState:
-        return ConnectFourState(np.zeros((cls.row_count, cls.column_count), dtype=np.int8))
+        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions(self.current_player)

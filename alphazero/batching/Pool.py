@@ -1,5 +1,7 @@
 from multiprocessing.context import BaseContext
 from typing import Generic, TypeVar
+import queue
+import time
 
 import torch
 
@@ -18,12 +20,24 @@ class mpQueueGen(Generic[T]):
     """
     def __init__(self, ctx: BaseContext, *args, **kwargs):
         self._queue = ctx.Queue(*args, **kwargs)
+        # Lock for consumers to ensure only one is waiting on the queue at a time
+        self._consumer_lock = ctx.Lock()
 
-    def put(self, item: T) -> None:
-        self._queue.put(item)
+    def put(self, *args, **kwargs) -> None:
+        try:
+            self._queue.put(*args, **kwargs)
+        except Exception as e:
+            raise e
 
-    def get(self) -> T:
-        return self._queue.get()
+    def get(self, *args, **kwargs) -> T:
+        try:
+            res = self._queue.get(*args, **kwargs)
+        except Exception as e:
+            raise e
+        return res
+
+    def consumer_lock(self):
+        return self._consumer_lock
 
     def empty(self):
         return self._queue.empty()
@@ -56,6 +70,8 @@ class GPU_AZ_Pool(object):
                  model_args: dict):
         self.inbox = inbox
         self.outboxes = outboxes
+        self.batch_size = model_args["batch_size"]
+        model_args = {k: v for k, v in model_args.items() if k != "batch_size"}
         self.model = ResNet(**model_args)
 
     def run(self) -> None:
@@ -64,17 +80,35 @@ class GPU_AZ_Pool(object):
         self.model.device = device
         self.model.eval()
 
-        while True:
-            # Grab queue lock first (only 1 consumer should be actively waiting on the queue at a time)
-            requests: list[AZ_NodeBatchRequest] = []
-            states = 0
-            while states < 1:  # Wait for at least 1 request to come in
-                request = self.inbox.get()
-                requests.append(request)
-                states += 1
+        MAX_WAIT_S = 0.001  # e.g. 1 ms after first request
 
-            # Wait for B requests to come and retrieve
-            # Release queue lock
+        while True:
+            with self.inbox.consumer_lock():
+                # Block indefinitely for the FIRST request.
+                first = self.inbox.get()
+
+                if first is None:
+                    break
+                requests: list[AZ_NodeBatchRequest] = [first]
+                deadline = time.monotonic() + MAX_WAIT_S
+
+                # Once at least one request exists, don't block indefinitely.
+                while len(requests) < self.batch_size:
+                    remaining = deadline - time.monotonic()
+
+                    if remaining <= 0:
+                        break
+
+                    try:
+                        request = self.inbox.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+
+                    if request is None:
+                        # Handle shutdown however you prefer.
+                        break
+
+                    requests.append(request)
 
             responses = self.gpu_compute(requests)  # For now, just process the first request in the batch
             for response in responses:
@@ -83,12 +117,11 @@ class GPU_AZ_Pool(object):
     def gpu_compute(self, requests: list[AZ_NodeBatchRequest]) -> list[AZ_NodeBatchResponse]:
         # Batch up the game state and action pairs into a tensor
         x = torch.stack([request.state.to_tensor() for request in requests]).to(self.model.device)
-        print(f"GPU_Pool.gpu_compute: x.shape={x.shape}, device={x.device}")
-        B = x.size(0)
 
         # Call GPU
         with torch.inference_mode():
             policy_batch, value_batch = self.model(x)
+            policy_batch = torch.softmax(policy_batch, dim=1)
 
         policy_batch = policy_batch.cpu()
         value_batch = value_batch.cpu()
@@ -120,6 +153,6 @@ class PoolFactory(object):
     def create_AZpool(self,
                       inbox: mpQueueGen[AZ_NodeBatchRequest],
                       outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> GPU_AZ_Pool:
-        assert self.pool_type in [AZ_NodeBatchRequest]
+        assert self.pool_type in [GPU_AZ_Pool]
         assert self.model_args is not None
         return GPU_AZ_Pool(inbox, outboxes, self.model_args)

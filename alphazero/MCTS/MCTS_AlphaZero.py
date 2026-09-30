@@ -28,7 +28,7 @@ class MCTS_Factory(object):
     debug = 0
     exploration = DEFAULT_EXPLORATION_PARAM
 
-    def __init__(self, rollouts: int, multi_sims: int, processes: int) -> None:
+    def __init__(self, rollouts: int, processes: int) -> None:
         self.debug = 0
         self.rollouts = rollouts
         self.processes = processes

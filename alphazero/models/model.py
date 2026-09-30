@@ -1,8 +1,10 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+from alphazero.games.GameBase import GameBase
+
 class ResNet(nn.Module):
-    def __init__(self, game_type, num_resBlocks, num_channels, device):
+    def __init__(self, game_type: GameBase, num_resBlocks, num_channels, device):
         super().__init__()
 
         self.device = device
@@ -21,7 +23,7 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(8),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * game_type.row_count * game_type.column_count, game_type.action_size)
+            nn.Linear(8 * game_type.row_count * game_type.col_count, game_type.action_size)
         )
 
         self.valueHead = nn.Sequential(
@@ -29,7 +31,7 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(8),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * game_type.row_count * game_type.column_count, 1),
+            nn.Linear(8 * game_type.row_count * game_type.col_count, 1),
             nn.Tanh()
         )
 

@@ -12,6 +12,10 @@ GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 class GameBase(Generic[GameStateT], ABC):
     state_cls: Type[GameStateT]
     action_size: ClassVar[int]
+
+    row_count: ClassVar[int]
+    col_count: ClassVar[int]
+
     __slots__ = ["state", "action_history", "current_player"]
 
     def __init__(self, state: GameStateT | None = None, starting_player: int=1) -> None:
