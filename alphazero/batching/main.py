@@ -2,21 +2,18 @@ import logging
 import sys
 
 import argparse
-from math import nan
 from multiprocessing import Process
-from queue import Queue
-from threading import Thread, local, Condition
-from typing import Generic, TypeVar, Type
-from concurrent.futures import ProcessPoolExecutor, Future, as_completed
+from typing import Type
+
+from alphazero.games.GameBase import GameBase
+from alphazero.games.TicTacToe import TicTacToeGame
+from alphazero.games.ConnectFour import ConnectFourGame
+from alphazero.MCTS_batch import MCTS_Factory
 
 from .NodeBatch import NodeBatchRequest, NodeBatchResponse
 from .GameWorker import GameWorker, mpQueueGen
 from .CPUPool import CPUPool
-from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
-from alphazero.games.TicTacToe import TicTacToeGame
-from alphazero.games.ConnectFour import ConnectFourGame
-from alphazero.MCTS_batch import MCTS_Factory, Node, simulate_
+
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 
@@ -102,7 +99,7 @@ def main(game_type: Type[GameBase], ROLLOUTS: int, MULTI_SIMS: int, PROCESSES: i
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
     request_queue: mpQueueGen[NodeBatchRequest] = mpQueueGen()
-    # N quese for ALL eval_workers --- sending to ---> N * game_workers queues
+    # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[NodeBatchResponse]] = [mpQueueGen()
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
