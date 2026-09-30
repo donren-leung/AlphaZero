@@ -5,14 +5,14 @@ import argparse
 import multiprocessing as mp
 from typing import Type
 
-from alphazero.games.GameBase import GameBase
-from alphazero.games.TicTacToe import TicTacToeGame
-from alphazero.games.ConnectFour import ConnectFourGame
-from alphazero.MCTS_batch import MCTS_Factory
+from .games.GameBase import GameBase
+from .games.TicTacToe import TicTacToeGame
+from .games.ConnectFour import ConnectFourGame
+from .MCTS.MCTS_batch import MCTS_Factory
 
-from .NodeBatch import NodeBatchRequest, NodeBatchResponse
-from .GameWorker import GameWorker, mpQueueGen
-from .Pool import PoolFactory, CPU_RandomRollout_Pool
+from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
+from .batching.GameWorker import GameWorker, mpQueueGen
+from .batching.Pool import PoolFactory, CPU_RandomRollout_Pool
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 

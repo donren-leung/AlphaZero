@@ -13,7 +13,7 @@ from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
 from alphazero.games.TicTacToe import TicTacToeGame
 from alphazero.games.ConnectFour import ConnectFourGame
-from alphazero.MCTS_batch import MCTS_Factory, Node, simulate_
+from alphazero.MCTS.MCTS_batch import MCTS_Factory, Node, simulate_
 
 GameT = TypeVar('GameT', bound='GameBase')
 

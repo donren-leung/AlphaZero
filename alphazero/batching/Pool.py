@@ -1,6 +1,6 @@
 import torch
 
-from alphazero.MCTS_batch import simulate_
+from alphazero.MCTS.MCTS_batch import simulate_
 from alphazero.models.model import ResNet
 
 from .GameWorker import mpQueueGen

@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
-from .games.GameBase import GameBase
-from .games.GameStateBase import GameStateBase
+from alphazero.batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
+from alphazero.games.GameBase import GameBase
+from alphazero.games.GameStateBase import GameStateBase
 
 # from viztracer import log_sparse
 
