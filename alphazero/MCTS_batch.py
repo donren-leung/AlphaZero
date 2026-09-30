@@ -7,12 +7,22 @@ from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
-from alphazero.batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
-from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+import numpy as np
+
+from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
+from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase
 
 # from viztracer import log_sparse
-import numpy as np
+
+"""
+Batched, Parallel Child MCTS Implementation for parallel games.
+
+MCTS_Instance.one_round_batch() used by GameWorker to select a leaf node and create a NodeBatchRequest for all children of the leaf node.
+simulate_() used by CPUPool.
+
+Note: Cannot be called by main.py because .search() is not implemented. Use MCTS_multichild.py instead for a single game.
+"""
 
 class MCTS_Factory(object):
     DEFAULT_EXPLORATION_PARAM = 1.41
@@ -154,7 +164,7 @@ class Node(object):
                  "value",
                  "value_sum",
                  "visits"]
-    def __init__(self, parent: 'Node' | None, parent_action: int | None,
+    def __init__(self, parent: Node | None, parent_action: int | None,
                  state: GameStateBase, player: int) -> None:
         assert (
             (parent is None and parent_action is None) or

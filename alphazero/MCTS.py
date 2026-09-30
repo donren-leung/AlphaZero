@@ -8,8 +8,8 @@ from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 from time import sleep
 
-from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase
 
 import numpy as np
 
@@ -123,7 +123,7 @@ class MCTS_Instance(object):
         curr = self.root
         if self.MCTS_factory.debug >= 2:
             curr.print_children(0)
-        while not curr.is_leafnode():
+        while curr and not curr.is_leafnode():
             curr = curr.select()
 
         # (Now at a leaf node)
@@ -134,6 +134,7 @@ class MCTS_Instance(object):
         # rollout from a random child.
         # If the game is ended at this point, obviously there can't be children
         # so just "simulate" and record the value.
+        assert curr is not None
         if curr.visits == 0 or curr.value is not None:
             simulating_node = curr
 
@@ -163,7 +164,7 @@ class Node(object):
                 "value_sum",
                 "visits",
                 "MCTS_factory"]
-    def __init__(self, parent: 'Node' | None, parent_action: int | None,
+    def __init__(self, parent: Node | None, parent_action: int | None,
                  state: GameStateBase, player: int,
                  *, MCTS_factory: MCTS_Factory) -> None:
         assert (

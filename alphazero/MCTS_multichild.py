@@ -7,11 +7,19 @@ from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
-from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase
 
 # from viztracer import log_sparse
 import numpy as np
+
+"""
+Parallel Child MCTS Implementation
+For the leaf node in each MCTS round, spawn simulations for each child node.
+One process will evaluate a child node by simulating rollouts for a number of times (multi_sims).
+
+Note: the actual used number of processes is limited by the branching factor
+"""
 
 class MCTS_Factory(object):
     DEFAULT_EXPLORATION_PARAM = 1.41
@@ -110,7 +118,7 @@ class MCTS_Instance(object):
         # If not currently a leaf node, traverse to child of current
         # which maximises UCB score.
         curr = self.root
-        while not curr.is_leafnode():
+        while curr and not curr.is_leafnode():
             curr = curr.select()
 
         # (Now at a leaf node)
@@ -122,6 +130,7 @@ class MCTS_Instance(object):
         # If not:
         #   for each available action, add a new child node to tree.
         #   rollout from all children.
+        assert curr is not None
         if self.MCTS_factory.debug >= 2:
             logging.debug(f"at node {curr.parent_action}")
 
@@ -165,7 +174,7 @@ class Node(object):
                  "value",
                  "value_sum",
                  "visits"]
-    def __init__(self, parent: 'Node' | None, parent_action: int | None,
+    def __init__(self, parent: Node | None, parent_action: int | None,
                  state: GameStateBase, player: int) -> None:
         assert (
             (parent is None and parent_action is None) or

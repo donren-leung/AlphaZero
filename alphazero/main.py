@@ -2,11 +2,11 @@ import argparse
 import logging
 import sys
 
-from games.TicTacToe import TicTacToeGame
-from games.ConnectFour import ConnectFourGame
-from games.GameBase import GameBase
+from .games.TicTacToe import TicTacToeGame
+from .games.ConnectFour import ConnectFourGame
+from .games.GameBase import GameBase
 # from MCTS import MCTS_Factory
-from MCTS_multichild import MCTS_Factory
+from .MCTS_multichild import MCTS_Factory
 
 import numpy as np
 
@@ -15,18 +15,21 @@ def human_gamelogic(move_legalities, curr_player) -> int:
     while True:
         try:
             cmd = input(f"Human (player {curr_player}):").strip()
-            action = int(cmd)
-        except ValueError:
-            if cmd == "q" or cmd == "":
-                return -1
-            print(f"Your input: {cmd} (numbers only). Press q to quit.")
-            continue
         except EOFError:
             return -1
+        if cmd == "q" or cmd == "":
+            return -1
+
+        try:
+            action = int(cmd)
+        except ValueError:
+            print(f"Your input: {cmd} (numbers only). Press q to quit.")
+            continue
 
         if move_legalities[action] == 0:
             print("move not legal\n")
             continue
+
         return action
 
 def main(args) -> None:
@@ -119,7 +122,7 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--rollouts', dest='rollouts', type=int, default=1000,
                         help='Number of MCTS rollouts per move for the PC (default: %(default)s)')
 
-    parser.add_argument('-e', '--exploration', dest='exploration', type=float,
+    parser.add_argument('-e', '--exploration', dest='exploration', type=float, default=MCTS_Factory.DEFAULT_EXPLORATION_PARAM,
                         help='Exploration parameter for MCTS node selection')
 
     parser.add_argument('-m', '--multi', dest='multi_sims', type=int, default=1,
