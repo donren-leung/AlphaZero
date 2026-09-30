@@ -1,10 +1,32 @@
+from multiprocessing.context import BaseContext
+from typing import Generic, TypeVar
+
 import torch
 
 from alphazero.MCTS.MCTS_batch import simulate_
 from alphazero.models.model import ResNet
 
-from .GameWorker import mpQueueGen
-from .NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
+# from .GameWorker import mpQueueGen
+from .NodeBatch import NodeBatchRequest, NodeBatchResponse,  SimulationReturnType
+from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
+
+T = TypeVar("T")
+
+class mpQueueGen(Generic[T]):
+    """
+    Generic wrapper around the multiprocessing Queue.
+    """
+    def __init__(self, ctx: BaseContext, *args, **kwargs):
+        self._queue = ctx.Queue(*args, **kwargs)
+
+    def put(self, item: T) -> None:
+        self._queue.put(item)
+
+    def get(self) -> T:
+        return self._queue.get()
+
+    def empty(self):
+        return self._queue.empty()
 
 class CPU_RandomRollout_Pool(object):
     def __init__(self,
@@ -27,10 +49,10 @@ class CPU_RandomRollout_Pool(object):
             response = NodeBatchResponse(worker_id, thread_id, results)
             self.outboxes[worker_id].put(response)
 
-class GPU_Pool(object):
+class GPU_AZ_Pool(object):
     def __init__(self,
-                 inbox: mpQueueGen[NodeBatchRequest],
-                 outboxes: list[mpQueueGen[NodeBatchResponse]],
+                 inbox: mpQueueGen[AZ_NodeBatchRequest],
+                 outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
                  model_args: dict):
         self.inbox = inbox
         self.outboxes = outboxes
@@ -44,24 +66,23 @@ class GPU_Pool(object):
 
         while True:
             # Grab queue lock first (only 1 consumer should be actively waiting on the queue at a time)
-            requests: list[NodeBatchRequest] = []
+            requests: list[AZ_NodeBatchRequest] = []
             states = 0
             while states < 1:  # Wait for at least 1 request to come in
                 request = self.inbox.get()
                 requests.append(request)
-                states += len(request.states_and_actions)
+                states += 1
 
             # Wait for B requests to come and retrieve
             # Release queue lock
 
-            for request in requests:
-                results = self.gpu_compute(request)  # For now, just process the first request in the batch
-                response = NodeBatchResponse(request.worker_id, request.thread_id, results)
-                self.outboxes[request.worker_id].put(response)
+            responses = self.gpu_compute(requests)  # For now, just process the first request in the batch
+            for response in responses:
+                self.outboxes[response.worker_id].put(response)
 
-    def gpu_compute(self, request: NodeBatchRequest) -> list[SimulationReturnType]:
+    def gpu_compute(self, requests: list[AZ_NodeBatchRequest]) -> list[AZ_NodeBatchResponse]:
         # Batch up the game state and action pairs into a tensor
-        x = torch.stack([state.to_tensor() for _, state in request.states_and_actions]).to(self.model.device)
+        x = torch.stack([request.state.to_tensor() for request in requests]).to(self.model.device)
         print(f"GPU_Pool.gpu_compute: x.shape={x.shape}, device={x.device}")
         B = x.size(0)
 
@@ -73,29 +94,32 @@ class GPU_Pool(object):
         value_batch = value_batch.cpu()
 
         # Unpack
-        unpacked = []
-        for i in range(B):
-            policy = policy_batch[i].numpy()
-            value = value_batch[i].item()
-            action, state = request.states_and_actions[i]
-            _, terminal = state.get_value_and_terminated(action)
-            unpacked.append((policy, value, terminal))
+        results: list[AZ_NodeBatchResponse] = []
+        for idx, request in enumerate(requests):
+            policy = policy_batch[idx].numpy()
+            value = value_batch[idx].item()
+            result = (policy, value)
+            results.append(AZ_NodeBatchResponse(request.worker_id, request.thread_id, result))
 
-        return unpacked
+        return results
 
 class PoolFactory(object):
-    def __init__(self, pool_type: type[CPU_RandomRollout_Pool] | type[GPU_Pool], model_args: dict | None = None):
+    def __init__(self, pool_type: type[CPU_RandomRollout_Pool] | type[GPU_AZ_Pool], model_args: dict | None = None):
         self.pool_type = pool_type
         self.model_args = model_args
 
-        if self.pool_type == GPU_Pool and self.model_args is None:
+        if self.pool_type == GPU_AZ_Pool and self.model_args is None:
             raise ValueError("GPUPool requires a model args dictionary to be provided.")
 
     def create_pool(self,
                     inbox: mpQueueGen[NodeBatchRequest],
-                    outboxes: list[mpQueueGen[NodeBatchResponse]]) -> CPU_RandomRollout_Pool | GPU_Pool:
-        if self.pool_type == GPU_Pool:
-            assert self.model_args is not None
-            return GPU_Pool(inbox, outboxes, self.model_args)
-        else:
-            return CPU_RandomRollout_Pool(inbox, outboxes)
+                    outboxes: list[mpQueueGen[NodeBatchResponse]]) -> CPU_RandomRollout_Pool:
+        assert self.pool_type in [CPU_RandomRollout_Pool]
+        return CPU_RandomRollout_Pool(inbox, outboxes)
+
+    def create_AZpool(self,
+                      inbox: mpQueueGen[AZ_NodeBatchRequest],
+                      outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> GPU_AZ_Pool:
+        assert self.pool_type in [AZ_NodeBatchRequest]
+        assert self.model_args is not None
+        return GPU_AZ_Pool(inbox, outboxes, self.model_args)

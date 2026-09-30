@@ -6,10 +6,12 @@ from multiprocessing.context import BaseContext
 from threading import Thread, local, Condition
 from typing import Generic, TypeVar, Type
 
+import numpy.typing as npt
+
+from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse
 from .Pool import mpQueueGen
-from .NodeBatch import NodeBatchRequest, NodeBatchResponse
 from alphazero.games.GameBase import GameBase
-from alphazero.MCTS.MCTS_batch import MCTS_Factory, Node
+from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
 
 GameT = TypeVar('GameT', bound='GameBase')
 
@@ -20,7 +22,7 @@ class GameWorker(Generic[GameT], object):
     """
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
-                 in_queue: mpQueueGen[NodeBatchResponse], out_queue: mpQueueGen[NodeBatchRequest],
+                 in_queue: mpQueueGen[AZ_NodeBatchResponse], out_queue: mpQueueGen[AZ_NodeBatchRequest],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
         self.num_games = num_games
@@ -30,13 +32,13 @@ class GameWorker(Generic[GameT], object):
 
         # Threading
         # Multiprocess stuff
-        self.in_queue:      mpQueueGen[NodeBatchResponse]   = in_queue
-        self.out_queue:     mpQueueGen[NodeBatchRequest]    = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameT]]   = output_games
+        self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]   = in_queue
+        self.out_queue:     mpQueueGen[AZ_NodeBatchRequest]    = out_queue
+        self.output_games:  mpQueueGen[tuple[str, GameT]]      = output_games
         # Consider below zipped by thread index
-        self.thread_inbox:  list[NodeBatchResponse | None]  = []
-        self.threads:       list[Thread]                    = []
-        self.inbox_cv:      list[Condition]                 = []
+        self.thread_inbox:  list[AZ_NodeBatchResponse | None]  = []
+        self.threads:       list[Thread]                       = []
+        self.inbox_cv:      list[Condition]                    = []
 
     def run(self) -> None:
         for i in range(self.num_games):
@@ -82,7 +84,7 @@ class GameWorker(Generic[GameT], object):
             if len(game.action_history) == 0:
                 pass
             else:
-                value, terminated = game.get_value_and_terminated(game.action_history[-1])
+                _, terminated = game.get_value_and_terminated(game.action_history[-1])
                 if terminated:
                     break
 
@@ -95,12 +97,11 @@ class GameWorker(Generic[GameT], object):
                 logging.debug(f"thread {thread_id} {MCTS_instance.root.visits} visits, not enough")
                 # Make next batch
                 logging.debug(f"{MCTS_instance.root=}")
-                node_or_nodes, request = MCTS_instance.one_round_batch(self.worker_id, thread_id)
+                node, request_or_response = MCTS_instance.one_round_batch(self.worker_id, thread_id)
 
-                if isinstance(request, NodeBatchRequest):
+                if isinstance(request_or_response, AZ_NodeBatchRequest):
                     # Send batch request to worker pool.
-                    assert isinstance(node_or_nodes, list), node_or_nodes
-                    self.out_queue.put(request)
+                    self.out_queue.put(request_or_response)
 
                     # Get or wait (block thread) for the result.
                     self.inbox_cv[thread_id].acquire()
@@ -112,24 +113,14 @@ class GameWorker(Generic[GameT], object):
                     self.inbox_cv[thread_id].release()
                     assert response is not None
 
-                    # Backpropogate
-                    visits_and_values: list[tuple[int, float]] = []
-                    parent = node_or_nodes[0].parent
-
-                    for node, result in zip(node_or_nodes, response.results):
-                        visits_and_values.append(result[:2])
-                        node.backpropogate(*result, stop_at_node=node)
-
-                    if parent is not None:
-                        total_visits = sum(visits for visits, _ in visits_and_values)
-                        total_values = sum(-values for _, values in visits_and_values)
-                        parent.backpropogate(total_visits, total_values, False)
-
+                    y_policy, y_value = response.result
+                    # Update prior probability from the neural network output
+                    node.expand(y_policy)
+                    node.backpropogate(1, y_value, False)
                 else:
                     # Cached result; no request is sent.
                     logging.debug(f"thread {thread_id} (cached) batchresponse")
-                    assert(isinstance(node_or_nodes, Node))
-                    node_or_nodes.backpropogate(*request.to_tuple())
+                    node.backpropogate(1, request_or_response.result[1], True)
 
                 MCTS_instance.root.print_children(0, limit=2)
 

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from numpy import int8, bool_
 from numpy.typing import NDArray
+import torch
 
 type State = NDArray[int8]
 
@@ -32,6 +33,9 @@ class GameStateBase(ABC):
         Checks whether the game state (resulting after the queried action) is terminal.\
         If so, return the reward -1 to 1 for the player who made the queried action"""
         ...
+
+    def to_tensor(self) -> torch.Tensor:
+        return torch.tensor(self.state, dtype=torch.float32).unsqueeze(0)
 
     @abstractmethod
     def __str__(self) -> str:
