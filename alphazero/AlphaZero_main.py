@@ -1,5 +1,8 @@
 import logging
 import sys
+import queue
+import time
+from threading import Thread
 
 import argparse
 import multiprocessing as mp
@@ -128,6 +131,7 @@ def main(game_type: Type[GameBase],
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
+    metrics_queue: mpQueueGen[tuple[int, int]] = mpQueueGen(ctx)
 
     for i in range(PROCESSES):
         eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues)
@@ -136,9 +140,11 @@ def main(game_type: Type[GameBase],
 
     for i, results_queue in enumerate(results_queues):
         game_worker = GameWorker(game_type,
-                                 num_games=GAME_WORKER_GAMES, output_games=all_game_results,
+                                 num_games=GAME_WORKER_GAMES,
+                                 output_games=all_game_results,
                                  in_queue=results_queue,
                                  out_queue=request_queue,
+                                 metrics_queue=metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
@@ -146,6 +152,10 @@ def main(game_type: Type[GameBase],
 
     for game_worker_p in game_worker_ps:
         game_worker_p.start()
+
+    # Start the metrics daemon
+    metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_queue, ROLLOUTS), daemon=True)
+    metrics_daemon_thread.start()
 
     expecting_results = TARGET_GAME_WORKERS * GAME_WORKER_GAMES
     for _ in range(expecting_results):
@@ -157,6 +167,77 @@ def main(game_type: Type[GameBase],
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
+
+def metrics_daemon(
+    metrics_queue: mpQueueGen[tuple[int, int]],
+    ROLLOUTS: int,
+    print_interval_s: float = 4.0,
+) -> None:
+    """
+    Consume cumulative GameWorker metric snapshots and periodically print
+    per-worker and total move throughput.
+
+    Queue messages:
+        (worker_id, total_moves)
+    """
+    latest_totals: dict[int, int] = {}
+    previous_totals: dict[int, int] = {}
+
+    interval_start = time.perf_counter()
+    next_print = interval_start + print_interval_s
+
+    while True:
+        now = time.perf_counter()
+        timeout = max(0.0, next_print - now)
+
+        try:
+            worker_id, total_moves = metrics_queue.get(timeout=timeout)
+            latest_totals[worker_id] = total_moves
+        except queue.Empty:
+            pass
+
+        now = time.perf_counter()
+        if now < next_print:
+            continue
+
+        elapsed = now - interval_start
+
+        worker_rates: dict[int, float] = {}
+        total_moves_delta = 0
+
+        for worker_id, total_moves in latest_totals.items():
+            previous = previous_totals.get(worker_id)
+            if previous is None:
+                # First observation establishes the baseline.
+                previous_totals[worker_id] = total_moves
+                continue
+
+            previous_total_moves = previous
+            delta_moves = total_moves - previous_total_moves
+            worker_rates[worker_id] = delta_moves / elapsed
+            total_moves_delta += delta_moves
+
+            previous_totals[worker_id] = total_moves
+
+        if worker_rates:
+            total_rate = total_moves_delta / elapsed
+
+            workers_text = " ".join(
+                f"W{worker_id}={rate:<2,.0f}"
+                for worker_id, rate in sorted(worker_rates.items())
+            )
+
+            print(
+                f"[Game throughput] "
+                f"{elapsed:1.3f}s :: "
+                f"{total_rate:3,.0f} moves/s :: "
+                f"{total_rate * ROLLOUTS:5,.0f} nodes/s "
+                f"| {workers_text}",
+                flush=True,
+            )
+
+        interval_start = now
+        next_print = now + print_interval_s
 
 if __name__ == "__main__":
     args = parse_args()

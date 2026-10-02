@@ -3,7 +3,7 @@ import sys
 
 from math import nan
 from multiprocessing.context import BaseContext
-from threading import Thread, local, Condition
+from threading import Thread, Lock, Condition
 from typing import Generic, TypeVar, Type
 
 from .Pool import mpQueueGen
@@ -18,13 +18,14 @@ class GameWorker(Generic[GameT], object):
     A CPU assigned to send batches of nodes to the evaluator for
     each position, for each parallel game of specified game type.
     """
+    metrics_interval_s = 1.0
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
                  in_queue: mpQueueGen[NodeBatchResponse], out_queue: mpQueueGen[NodeBatchRequest],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
         self.num_games = num_games
-        # self.finished_game_list: Queue[GameT] = Queue()
+
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
 
@@ -37,6 +38,11 @@ class GameWorker(Generic[GameT], object):
         self.thread_inbox:  list[NodeBatchResponse | None]  = []
         self.threads:       list[Thread]                    = []
         self.inbox_cv:      list[Condition]                 = []
+
+        # Metrics
+        self.metrics_lock = Lock()
+        self.moves_since_log = 0
+        self.thread_moves_since_log: list[int] = [0] * self.num_games
 
     def run(self) -> None:
         for i in range(self.num_games):
@@ -137,15 +143,19 @@ class GameWorker(Generic[GameT], object):
             root = MCTS_instance.root
             children_details = [(
                     child.visits / root.visits if MCTS_instance.rollouts else nan,
-                    (child.value_sum / child.visits) if child.visits else nan,
-                    root.get_ucb(child),
-                    child.visits,
+                    # (child.value_sum / child.visits) if child.visits else nan,
+                    # root.get_ucb(child),
+                    # child.visits,
                     child.parent_action if child.parent_action is not None else -1)
                 for child in root.children
             ]
-            best_action = max(children_details, key=lambda x: x[0])[4]
+            best_action = max(children_details, key=lambda x: x[0])[1]
             game.make_move(best_action)
             logging.debug(f"thread {thread_id} made move {best_action}")
+
+            with self.metrics_lock:
+                self.moves_since_log += 1
+                self.thread_moves_since_log[thread_id] += 1
 
         # Game finished
         logging.info(f"thread {thread_id} finished game")

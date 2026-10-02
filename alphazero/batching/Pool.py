@@ -67,7 +67,7 @@ class CPU_RandomRollout_Worker(object):
             self.outboxes[worker_id].put(response)
 
 class GPU_AZ_Worker(object):
-    MAX_WAIT_S = 0.01  # e.g. 1 ms after first request
+    MAX_WAIT_S = 0.005  # e.g. 5 ms after first request
     MAX_PREFETCH = 2
     def __init__(self,
                  inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],

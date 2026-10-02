@@ -1,10 +1,11 @@
 import logging
 import sys
+import time
 
 from math import nan
 from multiprocessing.context import BaseContext
 from queue import Queue, Empty
-from threading import Thread, local, Condition
+from threading import Thread, Lock, Condition
 from typing import Generic, TypeVar, Type
 
 import numpy.typing as npt
@@ -21,34 +22,42 @@ class GameWorker(Generic[GameT], object):
     A CPU assigned to send batches of nodes to the evaluator for
     each position, for each parallel game of specified game type.
     """
+    metrics_interval_s = 0.5
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None],
+                 metrics_queue: mpQueueGen[tuple[int, int]],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
         self.num_games = num_games
-        # self.finished_game_list: Queue[GameT] = Queue()
+
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
 
         # Threading
         # Multiprocess stuff
         self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
+        self.metrics_queue: mpQueueGen[tuple[int, int]]                    = metrics_queue
 
         self.out_queue:     mpQueueGen[list[AZ_NodeBatchRequest] | None]   = out_queue
         self.output_games:  mpQueueGen[tuple[str, GameT]]                  = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[AZ_SimulationReturnType | None]  = []
-        self.threads:       list[Thread]                       = []
-        self.inbox_cv:      list[Condition]                    = []
+        self.threads:       list[Thread]                          = []
+        self.inbox_cv:      list[Condition]                       = []
+
+        # Metrics
+        self.total_moves = 0
+        # self.thread_total_moves: list[int] = [0] * self.num_games
 
     def run(self) -> None:
+        self.metrics_lock = Lock()
         self.staging_out_queue: Queue[AZ_NodeBatchRequest] = Queue()
         Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
-        
+        Thread(target=self.metrics_d, args=[], daemon=True).start()
         for i in range(self.num_games):
             new_game_instance = self.game_type()
             new_inbox_cv = Condition()
@@ -103,6 +112,15 @@ class GameWorker(Generic[GameT], object):
             # Send the batch request to the worker pool.
             self.out_queue.put(requests)            
 
+    def metrics_d(self) -> None:
+        while True:
+            time.sleep(self.metrics_interval_s)
+            with self.metrics_lock:
+                total_moves = self.total_moves
+                # thread_total_moves = self.thread_total_moves.copy()
+
+            self.metrics_queue.put((self.worker_id, total_moves))
+
     def run_game(self, thread_id: int, game: GameT) -> None:
         logging.info(f"thread {thread_id} started")
         while True:
@@ -155,15 +173,19 @@ class GameWorker(Generic[GameT], object):
             root = MCTS_instance.root
             children_details = [(
                     child.visits / root.visits if MCTS_instance.rollouts else nan,
-                    (child.value_sum / child.visits) if child.visits else nan,
-                    root.get_ucb(child),
-                    child.visits,
+                    # (child.value_sum / child.visits) if child.visits else nan,
+                    # root.get_ucb(child),
+                    # child.visits,
                     child.parent_action if child.parent_action is not None else -1)
                 for child in root.children
             ]
-            best_action = max(children_details, key=lambda x: x[0])[4]
+            best_action = max(children_details, key=lambda x: x[0])[1]
             game.make_move(best_action)
             logging.debug(f"thread {thread_id} made move {best_action}")
+
+            with self.metrics_lock:
+                self.total_moves += 1
+                # self.thread_total_moves[thread_id] += 1
 
         # Game finished
         logging.info(f"thread {thread_id} finished game")
