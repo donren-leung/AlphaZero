@@ -1,7 +1,10 @@
+from collections import defaultdict
 from multiprocessing.context import BaseContext
 from typing import Generic, TypeVar
 import queue
+from queue import Queue
 import time
+from threading import Thread
 
 import torch
 
@@ -23,9 +26,9 @@ class mpQueueGen(Generic[T]):
         # Lock for consumers to ensure only one is waiting on the queue at a time
         self._consumer_lock = ctx.Lock()
 
-    def put(self, *args, **kwargs) -> None:
+    def put(self, obj: T, *args, **kwargs) -> None:
         try:
-            self._queue.put(*args, **kwargs)
+            self._queue.put(obj, *args, **kwargs)
         except Exception as e:
             raise e
 
@@ -42,7 +45,7 @@ class mpQueueGen(Generic[T]):
     def empty(self):
         return self._queue.empty()
 
-class CPU_RandomRollout_Pool(object):
+class CPU_RandomRollout_Worker(object):
     def __init__(self,
                  inbox: mpQueueGen[NodeBatchRequest],
                  outboxes: list[mpQueueGen[NodeBatchResponse]]):
@@ -63,13 +66,16 @@ class CPU_RandomRollout_Pool(object):
             response = NodeBatchResponse(worker_id, thread_id, results)
             self.outboxes[worker_id].put(response)
 
-class GPU_AZ_Pool(object):
+class GPU_AZ_Worker(object):
+    MAX_WAIT_S = 0.01  # e.g. 1 ms after first request
+    MAX_PREFETCH = 2
     def __init__(self,
-                 inbox: mpQueueGen[AZ_NodeBatchRequest],
+                 inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],
                  outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
                  model_args: dict):
         self.inbox = inbox
         self.outboxes = outboxes
+
         self.batch_size = model_args["batch_size"]
         model_args = {k: v for k, v in model_args.items() if k != "batch_size"}
         self.model = ResNet(**model_args)
@@ -80,43 +86,21 @@ class GPU_AZ_Pool(object):
         self.model.device = device
         self.model.eval()
 
-        MAX_WAIT_S = 0.001  # e.g. 1 ms after first request
+        self.ready_batches: Queue[list[AZ_NodeBatchRequest]] = Queue(maxsize=self.MAX_PREFETCH)
+        Thread(target=self.request_batch_d, args=[], daemon=True).start()
+
+        self.ready_responses: Queue[tuple[int, int,  AZ_SimulationReturnType]] = Queue()
+        Thread(target=self.response_d, args=[], daemon=True).start()
 
         while True:
-            with self.inbox.consumer_lock():
-                # Block indefinitely for the FIRST request.
-                first = self.inbox.get()
+            ready_batch = self.ready_batches.get()
+            if ready_batch is None:
+                break
+            self.gpu_compute(ready_batch)
 
-                if first is None:
-                    break
-                requests: list[AZ_NodeBatchRequest] = [first]
-                deadline = time.monotonic() + MAX_WAIT_S
-
-                # Once at least one request exists, don't block indefinitely.
-                while len(requests) < self.batch_size:
-                    remaining = deadline - time.monotonic()
-
-                    if remaining <= 0:
-                        break
-
-                    try:
-                        request = self.inbox.get(timeout=remaining)
-                    except queue.Empty:
-                        break
-
-                    if request is None:
-                        # Handle shutdown however you prefer.
-                        break
-
-                    requests.append(request)
-
-            responses = self.gpu_compute(requests)  # For now, just process the first request in the batch
-            for response in responses:
-                self.outboxes[response.worker_id].put(response)
-
-    def gpu_compute(self, requests: list[AZ_NodeBatchRequest]) -> list[AZ_NodeBatchResponse]:
+    def gpu_compute(self, batch: list[AZ_NodeBatchRequest]) -> None:
         # Batch up the game state and action pairs into a tensor
-        x = torch.stack([request.state.to_tensor() for request in requests]).to(self.model.device)
+        x = torch.stack([request.state.to_tensor() for request in batch]).to(self.model.device)
 
         # Call GPU
         with torch.inference_mode():
@@ -126,33 +110,106 @@ class GPU_AZ_Pool(object):
         policy_batch = policy_batch.cpu()
         value_batch = value_batch.cpu()
 
-        # Unpack
-        results: list[AZ_NodeBatchResponse] = []
-        for idx, request in enumerate(requests):
+        for idx, request in enumerate(batch):
             policy = policy_batch[idx].numpy()
             value = value_batch[idx].item()
             result = (policy, value)
-            results.append(AZ_NodeBatchResponse(request.worker_id, request.thread_id, result))
+            self.ready_responses.put((request.worker_id, request.thread_id, result))
 
-        return results
+    def request_batch_d(self) -> None:
+        pending: list[AZ_NodeBatchRequest] = []
+
+        while True:
+            # Start the next batch with any overflow from the previous one.
+            requests = pending[:self.batch_size]
+            pending = pending[self.batch_size:]
+
+            if len(requests) == self.batch_size:
+                # If we already have a full batch, don't block for more.
+                self.ready_batches.put(requests)
+                continue
+
+            with self.inbox.consumer_lock():
+                # Block indefinitely for the FIRST request.
+                first = self.inbox.get()
+
+                if first is None:
+                    break
+                requests.extend(first)
+                deadline = time.monotonic() + self.MAX_WAIT_S
+
+                # Once at least one request exists, don't block indefinitely.
+                while len(requests) < self.batch_size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+
+                    try:
+                        request = self.inbox.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+
+                    if request is None:
+                        break
+
+                    space = self.batch_size - len(requests)
+                    requests.extend(request[:space])
+                    pending.extend(request[space:])
+
+            self.ready_batches.put(requests)
+
+    def response_d(self) -> None:
+        # Per-worker list of pending responses containing tuples of (thread_id, result)
+        pending: defaultdict[int, list[tuple[int, AZ_SimulationReturnType]]] = defaultdict(list)
+
+        while True:
+            # Block until at least one result exists.
+            worker_id, thread_id, result = self.ready_responses.get()
+            pending[worker_id].append((thread_id, result))
+
+            # Then drain everything currently available.
+            while True:
+                try:
+                    worker_id, thread_id, result = self.ready_responses.get(block=False)
+                except queue.Empty:
+                    break
+
+                pending[worker_id].append((thread_id, result))
+
+            # Process the pending responses
+            # Try every worker rather than getting stuck on one.
+            for worker_id in list(pending):
+                thread_result = pending[worker_id]
+                if len(thread_result) == 0:
+                    del pending[worker_id]
+                    continue
+
+                batch_response = AZ_NodeBatchResponse(worker_id, thread_result)
+                try:
+                    self.outboxes[worker_id].put(batch_response, block=False)
+                except queue.Full:
+                    # If the queue is full, we will try again next time.
+                    continue
+
+                del pending[worker_id]
 
 class PoolFactory(object):
-    def __init__(self, pool_type: type[CPU_RandomRollout_Pool] | type[GPU_AZ_Pool], model_args: dict | None = None):
+    def __init__(self, pool_type: type[CPU_RandomRollout_Worker] | type[GPU_AZ_Worker], model_args: dict | None = None):
         self.pool_type = pool_type
         self.model_args = model_args
 
-        if self.pool_type == GPU_AZ_Pool and self.model_args is None:
+        if self.pool_type == GPU_AZ_Worker and self.model_args is None:
             raise ValueError("GPUPool requires a model args dictionary to be provided.")
 
-    def create_pool(self,
-                    inbox: mpQueueGen[NodeBatchRequest],
-                    outboxes: list[mpQueueGen[NodeBatchResponse]]) -> CPU_RandomRollout_Pool:
-        assert self.pool_type in [CPU_RandomRollout_Pool]
-        return CPU_RandomRollout_Pool(inbox, outboxes)
+    def create_CPU_rollout_worker(self,
+                                inbox: mpQueueGen[NodeBatchRequest],
+                                outboxes: list[mpQueueGen[NodeBatchResponse]]) -> CPU_RandomRollout_Worker:
+        assert self.pool_type in [CPU_RandomRollout_Worker]
+        return CPU_RandomRollout_Worker(inbox, outboxes)
 
-    def create_AZpool(self,
-                      inbox: mpQueueGen[AZ_NodeBatchRequest],
-                      outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> GPU_AZ_Pool:
-        assert self.pool_type in [GPU_AZ_Pool]
+    def create_AZ_GPU_worker(self,
+                            inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],
+                            outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> GPU_AZ_Worker:
+        assert self.pool_type in [GPU_AZ_Worker]
         assert self.model_args is not None
-        return GPU_AZ_Pool(inbox, outboxes, self.model_args)
+        return GPU_AZ_Worker(inbox, outboxes, self.model_args)

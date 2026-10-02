@@ -12,7 +12,7 @@ from .MCTS.MCTS_batch import MCTS_Factory
 
 from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
 from .batching.GameWorker import GameWorker, mpQueueGen
-from .batching.Pool import PoolFactory, CPU_RandomRollout_Pool
+from .batching.Pool import PoolFactory, CPU_RandomRollout_Worker
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 
@@ -93,7 +93,7 @@ def main(game_type: Type[GameBase],
     ## Init
     # CPU or (in the future) GPU
     ctx = mp.get_context("spawn")
-    pool_factory = PoolFactory(CPU_RandomRollout_Pool)
+    pool_factory = PoolFactory(CPU_RandomRollout_Worker)
 
     MCTS_factory = MCTS_Factory(ROLLOUTS, MULTI_SIMS, PROCESSES)
     target_eval_workers = MCTS_factory.processes
@@ -108,7 +108,7 @@ def main(game_type: Type[GameBase],
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
     for i in range(target_eval_workers):
-        eval_worker = pool_factory.create_pool(request_queue, results_queues)
+        eval_worker = pool_factory.create_CPU_rollout_worker(request_queue, results_queues)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
 

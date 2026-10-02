@@ -3,12 +3,13 @@ import sys
 
 from math import nan
 from multiprocessing.context import BaseContext
+from queue import Queue, Empty
 from threading import Thread, local, Condition
 from typing import Generic, TypeVar, Type
 
 import numpy.typing as npt
 
-from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse
+from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
 from alphazero.games.GameBase import GameBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
@@ -22,7 +23,8 @@ class GameWorker(Generic[GameT], object):
     """
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
-                 in_queue: mpQueueGen[AZ_NodeBatchResponse], out_queue: mpQueueGen[AZ_NodeBatchRequest],
+                 in_queue: mpQueueGen[AZ_NodeBatchResponse],
+                 out_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
         self.num_games = num_games
@@ -32,15 +34,21 @@ class GameWorker(Generic[GameT], object):
 
         # Threading
         # Multiprocess stuff
-        self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]   = in_queue
-        self.out_queue:     mpQueueGen[AZ_NodeBatchRequest]    = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameT]]      = output_games
+        self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
+
+        self.out_queue:     mpQueueGen[list[AZ_NodeBatchRequest] | None]   = out_queue
+        self.output_games:  mpQueueGen[tuple[str, GameT]]                  = output_games
+
         # Consider below zipped by thread index
-        self.thread_inbox:  list[AZ_NodeBatchResponse | None]  = []
+        self.thread_inbox:  list[AZ_SimulationReturnType | None]  = []
         self.threads:       list[Thread]                       = []
         self.inbox_cv:      list[Condition]                    = []
 
     def run(self) -> None:
+        self.staging_out_queue: Queue[AZ_NodeBatchRequest] = Queue()
+        Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
+        Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
+        
         for i in range(self.num_games):
             new_game_instance = self.game_type()
             new_inbox_cv = Condition()
@@ -52,29 +60,48 @@ class GameWorker(Generic[GameT], object):
             self.threads.append(t)
             self.inbox_cv.append(new_inbox_cv)
 
-        Thread(target=self.daemon_thread, args=[], daemon=True).start()
-
         for thread in self.threads:
             thread.start()
 
-    def daemon_thread(self) -> None:
+    def inbound_mailman_d(self) -> None:
         """
         'Mailman' thread -- Gets BatchResponses from the MP world and
         in the local process puts it into the correct per-thread mailbox.
         """
         while True:
             # Blocking call to get a BatchResponse from the MP queue.
-            response = self.in_queue.get()
-            assert response.worker_id == self.worker_id
-            assert response.thread_id >= 0 and response.thread_id < len(self.threads)
-            assert self.thread_inbox[response.thread_id] is None
+            batch_response = self.in_queue.get()
+            assert batch_response.worker_id == self.worker_id
+            for result in batch_response.results:
+                thread_id, eval_result = result
+                assert thread_id >= 0 and thread_id < len(self.threads)
+                assert self.thread_inbox[thread_id] is None
 
-            # Open (with mutex) the right thread's mailbox, insert the
-            # received BatchResponse and notify the waiting thread.
-            self.inbox_cv[response.thread_id].acquire()
-            self.thread_inbox[response.thread_id] = response
-            self.inbox_cv[response.thread_id].notify()
-            self.inbox_cv[response.thread_id].release()
+                # Open (with mutex) the right thread's mailbox, insert the
+                # received BatchResponse and notify the waiting thread.
+                self.inbox_cv[thread_id].acquire()
+                self.thread_inbox[thread_id] = eval_result
+                self.inbox_cv[thread_id].notify()
+                self.inbox_cv[thread_id].release()
+
+    def outbound_mailman_d(self) -> None:
+        """
+        Consolidates individual thread requests into a single batch request to send to the MP world.
+        """
+        while True:
+            request = self.staging_out_queue.get()
+            requests: list[AZ_NodeBatchRequest] = [request]
+            
+            # Drain the staging queue for more requests to batch together.
+            while True:
+                try:
+                    request = self.staging_out_queue.get(block=False)
+                except Empty:
+                    break
+                requests.append(request)
+
+            # Send the batch request to the worker pool.
+            self.out_queue.put(requests)            
 
     def run_game(self, thread_id: int, game: GameT) -> None:
         logging.info(f"thread {thread_id} started")
@@ -101,26 +128,26 @@ class GameWorker(Generic[GameT], object):
 
                 if isinstance(request_or_response, AZ_NodeBatchRequest):
                     # Send batch request to worker pool.
-                    self.out_queue.put(request_or_response)
+                    self.staging_out_queue.put(request_or_response)
 
                     # Get or wait (block thread) for the result.
                     self.inbox_cv[thread_id].acquire()
                     # NOTE: Is this while loop strictly needed??
                     while self.thread_inbox[thread_id] is None:
                         self.inbox_cv[thread_id].wait()
-                    response = self.thread_inbox[thread_id]
+                    eval_result = self.thread_inbox[thread_id]
                     self.thread_inbox[thread_id] = None
                     self.inbox_cv[thread_id].release()
-                    assert response is not None
+                    assert eval_result is not None
 
-                    y_policy, y_value = response.result
+                    y_policy, y_value = eval_result
                     # Update prior probability from the neural network output
                     node.expand(y_policy)
                     node.backpropogate(1, y_value, False)
                 else:
                     # Cached result; no request is sent.
                     logging.debug(f"thread {thread_id} (cached) batchresponse")
-                    node.backpropogate(1, request_or_response.result[1], True)
+                    node.backpropogate(1, request_or_response[1], True)
 
                 MCTS_instance.root.print_children(0, limit=2)
 

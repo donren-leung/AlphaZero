@@ -41,6 +41,6 @@ class AZ_NodeBatchRequest:
 
 @dataclass(slots=True, frozen=True)
 class AZ_NodeBatchResponse:
-    worker_id: int
-    thread_id: int
-    result:   AZ_SimulationReturnType
+    worker_id:  int
+    # keyed by thread_id
+    results:    list[tuple[int, AZ_SimulationReturnType]]

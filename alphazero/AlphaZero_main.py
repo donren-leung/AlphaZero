@@ -15,7 +15,7 @@ from alphazero.models.model import ResNet
 
 from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
-from .batching.Pool import CPU_RandomRollout_Pool, GPU_AZ_Pool, PoolFactory
+from .batching.Pool import CPU_RandomRollout_Worker, GPU_AZ_Worker, PoolFactory
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 
@@ -114,24 +114,23 @@ def main(game_type: Type[GameBase],
             "device": "cpu",
             "batch_size": BATCH_SIZE
         }
-        pool_factory = PoolFactory(GPU_AZ_Pool if torch.cuda.is_available() else CPU_RandomRollout_Pool, model_args=model_args)
+        pool_factory = PoolFactory(GPU_AZ_Worker if torch.cuda.is_available() else CPU_RandomRollout_Worker, model_args=model_args)
     else:
-        pool_factory = PoolFactory(CPU_RandomRollout_Pool)
+        pool_factory = PoolFactory(CPU_RandomRollout_Worker)
 
-    MCTS_factory = MCTS_Factory(ROLLOUTS, PROCESSES)
-    target_eval_workers = MCTS_factory.processes
+    MCTS_factory = MCTS_Factory(ROLLOUTS)
 
     game_worker_ps: list[mp.context.SpawnProcess] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
-    request_queue: mpQueueGen[AZ_NodeBatchRequest] = mpQueueGen(ctx)
+    request_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None] = mpQueueGen(ctx)
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
-    for i in range(target_eval_workers):
-        eval_worker = pool_factory.create_AZpool(request_queue, results_queues)
+    for i in range(PROCESSES):
+        eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
 

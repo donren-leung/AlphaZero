@@ -28,10 +28,9 @@ class MCTS_Factory(object):
     debug = 0
     exploration = DEFAULT_EXPLORATION_PARAM
 
-    def __init__(self, rollouts: int, processes: int) -> None:
+    def __init__(self, rollouts: int) -> None:
         self.debug = 0
         self.rollouts = rollouts
-        self.processes = processes
 
     def set_debug_state(self, debug: int) -> None:
         self.debug = debug
@@ -68,13 +67,14 @@ class MCTS_Instance(object):
         state = game.state
         assert issubclass(state.__class__, GameStateBase)
 
-        self.root = Node(None, None, None, state, player)
+        # TODO: recover from a previous MCTS tree if possible, instead of starting from scratch.
+        self.root = Node(None, None, 1.0, state, player)
         self.rollouts = rollouts
         self.MCTS_factory = MCTS_factory
 
     def one_round_batch(self, worker_id: int, thread_id: int) -> \
                             tuple[Node, AZ_NodeBatchRequest] | \
-                            tuple[Node, AZ_NodeBatchResponse]:
+                            tuple[Node, AZ_SimulationReturnType]:
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
         # children that aren't made yet.)
@@ -100,11 +100,7 @@ class MCTS_Instance(object):
         if curr.value is not None:
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value}")
-            return curr, AZ_NodeBatchResponse(
-                worker_id,
-                thread_id,
-                (np.array([0.0]), curr.value)
-            )
+            return curr, (np.array([0.0]), curr.value)
         else:
             return curr, AZ_NodeBatchRequest(
                 worker_id,
@@ -137,15 +133,13 @@ class Node(object):
     def __init__(self,
                  parent: Node | None,
                  parent_action: int | None,
-                 prior_prob: float | None,
+                 prior_prob: float,
                  state: GameStateBase,
                  player: int) -> None:
         if parent is None:
             assert parent_action is None
-            assert prior_prob is None
         else:
             assert parent_action is not None
-            assert prior_prob is not None
 
         self.parent = parent                # Parent MCTS node
         self.parent_action = parent_action  # Move made by parent node to get to here
@@ -208,13 +202,13 @@ class Node(object):
         # assert policy is non-negative
         assert np.all(policy >= 0), f"policy must be non-negative, got {policy}."
 
-
+        norm_policy = mask_and_norm(valid_actions, policy)
         for action_idx in np.flatnonzero(valid_actions):
             new_state = curr_state.get_next_state(action_idx, self.player)
             child = Node(
                 parent=self,
                 parent_action=action_idx,
-                prior_prob=float(policy[action_idx]),
+                prior_prob=float(norm_policy[action_idx]),
                 state=new_state,
                 player=-1 * self.player
             )
@@ -264,3 +258,12 @@ class Node(object):
 
         for child in self.children:
             child.print_children(depth + 1, limit=limit)
+
+def mask_and_norm(valid: npt.NDArray[np.bool_], policy: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+    policy = np.where(valid, policy, 0.0)
+    policy_sum = np.sum(policy)
+    if policy_sum == 0:
+        # If all actions are invalid, make all actions equally probable
+        return np.full_like(policy, 1.0 / len(policy), dtype=np.float32)
+    else:
+        return policy / policy_sum
