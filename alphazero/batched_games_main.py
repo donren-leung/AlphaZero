@@ -3,6 +3,7 @@ import sys
 
 import argparse
 import multiprocessing as mp
+from multiprocessing.process import BaseProcess
 from typing import Type
 
 from .games.GameBase import GameBase
@@ -98,7 +99,7 @@ def main(game_type: Type[GameBase],
     MCTS_factory = MCTS_Factory(ROLLOUTS, MULTI_SIMS, PROCESSES)
     target_eval_workers = MCTS_factory.processes
 
-    game_worker_ps: list[mp.context.SpawnProcess] = []
+    game_worker_ps: list[BaseProcess] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers

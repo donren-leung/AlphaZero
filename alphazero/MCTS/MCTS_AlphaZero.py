@@ -260,7 +260,7 @@ class Node(object):
             child.print_children(depth + 1, limit=limit)
 
 def mask_and_norm(valid: npt.NDArray[np.bool_], policy: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
-    policy = np.where(valid, policy, 0.0)
+    policy *= valid
     policy_sum = np.sum(policy)
     if policy_sum == 0:
         # If all actions are invalid, make all actions equally probable

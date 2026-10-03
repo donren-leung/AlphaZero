@@ -67,8 +67,12 @@ class CPU_RandomRollout_Worker(object):
             self.outboxes[worker_id].put(response)
 
 class GPU_AZ_Worker(object):
-    MAX_WAIT_S = 0.005  # e.g. 5 ms after first request
-    MAX_PREFETCH = 2
+    # 5 ms after first request
+    MAX_WAIT_S = 0.005
+    MAX_PREFETCH = 3
+    RESPONSE_COOL_DOWN_S = 0.005
+    METRICS_INTERVAL_S = 0.5
+
     def __init__(self,
                  inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],
                  outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
@@ -192,6 +196,7 @@ class GPU_AZ_Worker(object):
                     continue
 
                 del pending[worker_id]
+            time.sleep(self.RESPONSE_COOL_DOWN_S)
 
 class PoolFactory(object):
     def __init__(self, pool_type: type[CPU_RandomRollout_Worker] | type[GPU_AZ_Worker], model_args: dict | None = None):

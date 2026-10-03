@@ -6,6 +6,7 @@ from threading import Thread
 
 import argparse
 import multiprocessing as mp
+from multiprocessing.process import BaseProcess
 from typing import Type
 
 import torch
@@ -45,40 +46,40 @@ def parse_args() -> argparse.Namespace:
         "--rollouts",
         "-r",
         type=int,
-        default=1000,
-        help="Number of MCTS rollouts/visits per move (default: 1000)",
+        default=400,
+        help="Number of MCTS nodes per move (default: 400)",
     )
 
     parser.add_argument(
         "--processes",
         "-p",
         type=int,
-        default=8,
-        help="Number of node-evaluation worker processes (default: 8)",
+        default=4,
+        help="Number of node-evaluation worker processes (default: 4)",
     )
 
     parser.add_argument(
         "--game-workers",
         "-gw",
         type=int,
-        default=2,
-        help="Number of GameWorker processes (default: 2)",
+        default=8,
+        help="Number of GameWorker processes (default: 8)",
     )
 
     parser.add_argument(
         "--games-per-worker",
         "-gpw",
         type=int,
-        default=8,
-        help="Number of concurrent games/threads per GameWorker (default: 8)",
+        default=64,
+        help="Number of concurrent games/threads per GameWorker (default: 64)",
     )
 
     parser.add_argument(
         "--batch-size",
         "-b",
         type=int,
-        default=8,
-        help="GPU batch size for node evaluation (default: 8)",
+        default=64,
+        help="GPU batch size for node evaluation (default: 64)",
     )
 
     parser.add_argument(
@@ -112,8 +113,8 @@ def main(game_type: Type[GameBase],
         print(f"Using {'GPU' if torch.cuda.is_available() else 'CPU'} for node evaluation.")
         model_args = {
             "game_type": game_type,
-            "num_resBlocks": 3,
-            "num_channels": 32,
+            "num_resBlocks": 12,
+            "num_channels": 64,
             "device": "cpu",
             "batch_size": BATCH_SIZE
         }
@@ -123,7 +124,7 @@ def main(game_type: Type[GameBase],
 
     MCTS_factory = MCTS_Factory(ROLLOUTS)
 
-    game_worker_ps: list[mp.context.SpawnProcess] = []
+    game_worker_ps: list[BaseProcess] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
@@ -131,7 +132,11 @@ def main(game_type: Type[GameBase],
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
-    metrics_queue: mpQueueGen[tuple[int, int]] = mpQueueGen(ctx)
+
+    # Cumulative moves
+    worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
+    # Batch total, batches
+    eval_metrics_queue: mpQueueGen[tuple[int, int]] = mpQueueGen(ctx)
 
     for i in range(PROCESSES):
         eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues)
@@ -144,7 +149,7 @@ def main(game_type: Type[GameBase],
                                  output_games=all_game_results,
                                  in_queue=results_queue,
                                  out_queue=request_queue,
-                                 metrics_queue=metrics_queue,
+                                 metrics_queue=worker_metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
@@ -154,7 +159,7 @@ def main(game_type: Type[GameBase],
         game_worker_p.start()
 
     # Start the metrics daemon
-    metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_queue, ROLLOUTS), daemon=True)
+    metrics_daemon_thread = Thread(target=metrics_daemon, args=(worker_metrics_queue,), daemon=True)
     metrics_daemon_thread.start()
 
     expecting_results = TARGET_GAME_WORKERS * GAME_WORKER_GAMES
@@ -169,19 +174,18 @@ def main(game_type: Type[GameBase],
         game_worker_p.join()
 
 def metrics_daemon(
-    metrics_queue: mpQueueGen[tuple[int, int]],
-    ROLLOUTS: int,
-    print_interval_s: float = 4.0,
+    metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
+    print_interval_s: float = 2.5,
 ) -> None:
     """
     Consume cumulative GameWorker metric snapshots and periodically print
     per-worker and total move throughput.
 
     Queue messages:
-        (worker_id, total_moves)
+        (worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results)
     """
-    latest_totals: dict[int, int] = {}
-    previous_totals: dict[int, int] = {}
+    latest_totals: dict[int, tuple[int, int, int, int, int]] = {}
+    previous_totals: dict[int, tuple[int, int, int, int, int]] = {}
 
     interval_start = time.perf_counter()
     next_print = interval_start + print_interval_s
@@ -191,8 +195,8 @@ def metrics_daemon(
         timeout = max(0.0, next_print - now)
 
         try:
-            worker_id, total_moves = metrics_queue.get(timeout=timeout)
-            latest_totals[worker_id] = total_moves
+            worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(timeout=timeout)
+            latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
         except queue.Empty:
             pass
 
@@ -202,37 +206,84 @@ def metrics_daemon(
 
         elapsed = now - interval_start
 
-        worker_rates: dict[int, float] = {}
-        total_moves_delta = 0
+        worker_sent_eff: dict[int, float] = {}
+        worker_rec_node_rates: dict[int, float] = {}
+        worker_rec_eff: dict[int, float] = {}
 
-        for worker_id, total_moves in latest_totals.items():
+        total_moves_delta = 0
+        total_sent_batches = 0
+        total_sent_requests = 0
+        total_received_batches = 0
+        total_received_results = 0
+
+        for worker_id, (total_moves, sent_batches, sent_requests, received_batches, received_results) in latest_totals.items():
             previous = previous_totals.get(worker_id)
             if previous is None:
                 # First observation establishes the baseline.
-                previous_totals[worker_id] = total_moves
+                previous_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
                 continue
 
-            previous_total_moves = previous
-            delta_moves = total_moves - previous_total_moves
-            worker_rates[worker_id] = delta_moves / elapsed
-            total_moves_delta += delta_moves
+            deltas = tuple(total - prev for total, prev in zip((total_moves, sent_batches, sent_requests, received_batches, received_results), previous))
+            worker_sent_eff[worker_id] = deltas[2] / (deltas[1]) if deltas[1] > 0 else 0.0
+            worker_rec_node_rates[worker_id] = deltas[4] / elapsed
+            worker_rec_eff[worker_id] = deltas[4] / (deltas[3]) if deltas[3] > 0 else 0.0
 
-            previous_totals[worker_id] = total_moves
+            total_moves_delta += deltas[0]
+            total_sent_batches += deltas[1]
+            total_sent_requests += deltas[2]
+            total_received_batches += deltas[3]
+            total_received_results += deltas[4]
 
-        if worker_rates:
-            total_rate = total_moves_delta / elapsed
+            previous_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
 
-            workers_text = " ".join(
-                f"W{worker_id}={rate:<2,.0f}"
-                for worker_id, rate in sorted(worker_rates.items())
-            )
+        if worker_rec_node_rates:
+            total_move_rate = total_moves_delta / elapsed
+            total_sent_batch_rate = total_sent_batches / elapsed
+            total_sent_node_rate = total_sent_requests / elapsed
+            total_received_node_rate = total_received_results / elapsed
+            total_received_batch_rate = total_received_batches / elapsed
+            # total_sent_eff = total_sent_requests / elapsed
+
+            node_rates = list(worker_rec_node_rates.values())
+            sent_effs = list(worker_sent_eff.values())
+            rec_effs = list(worker_rec_eff.values())
+
+            min_node_rate = min(node_rates)
+            mean_node_rate = sum(node_rates) / len(node_rates)
+            max_node_rate = max(node_rates)
+
+            min_sent_efficiency = min(sent_effs)
+            mean_sent_efficiency = sum(sent_effs) / len(sent_effs)
+            max_sent_efficiency = max(sent_effs)
+
+            min_rec_efficiency = min(rec_effs)
+            mean_rec_efficiency = sum(rec_effs) / len(rec_effs)
+            max_rec_efficiency = max(rec_effs)
+
+            def human_readable(num: float) -> str:
+                for threshold, suffix in [(1_000_000, "M"), (1_000, "K"), (1, "")]:
+                    if num >= threshold:
+                        scaled = num / threshold
+                        # Format to 3 significant figures and strip trailing zeros/dot
+                        formatted = f"{scaled:.3f}"[:4].rstrip(".")
+                        return f"{formatted}{suffix}"
+                return f"{num:.3g}"
 
             print(
                 f"[Game throughput] "
                 f"{elapsed:1.3f}s :: "
-                f"{total_rate:3,.0f} moves/s :: "
-                f"{total_rate * ROLLOUTS:5,.0f} nodes/s "
-                f"| {workers_text}",
+                f"{total_move_rate:3.0f} moves/s :: "
+                f"SENT: "
+                f"{human_readable(total_sent_node_rate)} nodes/s "
+                f"{human_readable(total_sent_batch_rate)} batches/s "
+                f"/batch {min_sent_efficiency:3.0f}-{mean_sent_efficiency:3.0f}-{max_sent_efficiency:3.0f} "
+                f"| REC: "
+                f"{human_readable(total_received_node_rate)} nodes/s "
+                f"{human_readable(total_received_batch_rate)} batches/s "
+                f"nodes/worker={min_node_rate:4.0f}-{mean_node_rate:4.0f}-{max_node_rate:4.0f} "
+                f"/batch {min_rec_efficiency:3.0f}-{mean_rec_efficiency:3.0f}-{max_rec_efficiency:3.0f} ",
+
+                # f"| {workers_text}",
                 flush=True,
             )
 

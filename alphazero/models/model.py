@@ -15,23 +15,23 @@ class ResNet(nn.Module):
         )
 
         self.backBone = nn.ModuleList(
-            [ResBlock(num_channels) for i in range(num_resBlocks)]
+            [ResBlock(num_channels) for _ in range(num_resBlocks)]
         )
 
         self.policyHead = nn.Sequential(
-            nn.Conv2d(num_channels, 8, kernel_size=3, padding=1),
-            nn.BatchNorm2d(8),
+            nn.Conv2d(num_channels, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * game_type.row_count * game_type.col_count, game_type.action_size)
+            nn.Linear(16 * game_type.row_count * game_type.col_count, game_type.action_size)
         )
 
         self.valueHead = nn.Sequential(
-            nn.Conv2d(num_channels, 8, kernel_size=3, padding=1),
-            nn.BatchNorm2d(8),
+            nn.Conv2d(num_channels, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(8 * game_type.row_count * game_type.col_count, 1),
+            nn.Linear(16 * game_type.row_count * game_type.col_count, 1),
             nn.Tanh()
         )
 

@@ -23,11 +23,15 @@ class GameWorker(Generic[GameT], object):
     each position, for each parallel game of specified game type.
     """
     metrics_interval_s = 0.5
+    MAX_WAIT_S = 0.5
+    RECHECK_INTERVAL_S = 0.1
+    WAIT_FRAC = 0.4
+
     def __init__(self, game_type: type[GameT], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None],
-                 metrics_queue: mpQueueGen[tuple[int, int]],
+                 metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
         self.num_games = num_games
@@ -38,7 +42,7 @@ class GameWorker(Generic[GameT], object):
         # Threading
         # Multiprocess stuff
         self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
-        self.metrics_queue: mpQueueGen[tuple[int, int]]                    = metrics_queue
+        self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
         self.out_queue:     mpQueueGen[list[AZ_NodeBatchRequest] | None]   = out_queue
         self.output_games:  mpQueueGen[tuple[str, GameT]]                  = output_games
@@ -50,14 +54,22 @@ class GameWorker(Generic[GameT], object):
 
         # Metrics
         self.total_moves = 0
+        self.sent_batches = 0
+        self.sent_requests = 0
+        self.received_batches = 0
+        self.received_results = 0
+        self.active_games = 0
         # self.thread_total_moves: list[int] = [0] * self.num_games
 
     def run(self) -> None:
         self.metrics_lock = Lock()
+        self.outbound_cv = Condition()
+
         self.staging_out_queue: Queue[AZ_NodeBatchRequest] = Queue()
         Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.metrics_d, args=[], daemon=True).start()
+
         for i in range(self.num_games):
             new_game_instance = self.game_type()
             new_inbox_cv = Condition()
@@ -68,6 +80,7 @@ class GameWorker(Generic[GameT], object):
             self.thread_inbox.append(None)
             self.threads.append(t)
             self.inbox_cv.append(new_inbox_cv)
+            self.active_games += 1
 
         for thread in self.threads:
             thread.start()
@@ -93,13 +106,24 @@ class GameWorker(Generic[GameT], object):
                 self.inbox_cv[thread_id].notify()
                 self.inbox_cv[thread_id].release()
 
+            with self.metrics_lock:
+                self.received_batches += 1
+                self.received_results += len(batch_response.results)
+
     def outbound_mailman_d(self) -> None:
         """
         Consolidates individual thread requests into a single batch request to send to the MP world.
+        Only send when:
+            - at least 40% of active threads have requests, or
+            - when the first request has been waiting for MAX_WAIT_S seconds.
         """
+        requests: list[AZ_NodeBatchRequest] = []
+        first_request_time = 0.0
         while True:
             request = self.staging_out_queue.get()
-            requests: list[AZ_NodeBatchRequest] = [request]
+            if not requests:
+                first_request_time = time.perf_counter()
+            requests.append(request)
             
             # Drain the staging queue for more requests to batch together.
             while True:
@@ -110,16 +134,28 @@ class GameWorker(Generic[GameT], object):
                 requests.append(request)
 
             # Send the batch request to the worker pool.
-            self.out_queue.put(requests)            
+            if len(requests) >= max(1, int(self.WAIT_FRAC * self.active_games)) or (time.perf_counter() - first_request_time) >= self.MAX_WAIT_S:
+                self.out_queue.put(requests)
+                with self.metrics_lock:
+                    self.sent_batches += 1
+                    self.sent_requests += len(requests)
+                requests = []
+            else:
+                # If we don't have enough requests to send a batch, wait for more.
+                time.sleep(self.RECHECK_INTERVAL_S)
+                continue
 
     def metrics_d(self) -> None:
         while True:
             time.sleep(self.metrics_interval_s)
-            with self.metrics_lock:
-                total_moves = self.total_moves
-                # thread_total_moves = self.thread_total_moves.copy()
-
-            self.metrics_queue.put((self.worker_id, total_moves))
+            self.metrics_queue.put(
+                (self.worker_id,
+                 self.total_moves,
+                 self.sent_batches,
+                 self.sent_requests,
+                 self.received_batches,
+                 self.received_results)
+            )
 
     def run_game(self, thread_id: int, game: GameT) -> None:
         logging.info(f"thread {thread_id} started")
@@ -190,3 +226,6 @@ class GameWorker(Generic[GameT], object):
         # Game finished
         logging.info(f"thread {thread_id} finished game")
         self.output_games.put((f"{self.worker_id}_{thread_id}", game))
+
+        with self.metrics_lock:
+            self.active_games -= 1
