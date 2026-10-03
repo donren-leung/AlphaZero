@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase

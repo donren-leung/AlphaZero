@@ -1,23 +1,22 @@
 import logging
-import sys
 import time
 
-from math import nan
-from multiprocessing.context import BaseContext
 from queue import Queue, Empty
 from threading import Thread, Lock, Condition
 from typing import Generic, TypeVar, Type
 
+import numpy as np
 import numpy.typing as npt
 
 from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
-from alphazero.games.GameBase import GameBase
+from alphazero.games.GameBase import GameBase, GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
 
-GameT = TypeVar('GameT', bound='GameBase')
+GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+GameT = GameBase[GameStateT]
 
-class GameWorker(Generic[GameT], object):
+class GameWorker(Generic[GameStateT], object):
     """
     A CPU assigned to send batches of nodes to the evaluator for
     each position, for each parallel game of specified game type.
@@ -27,8 +26,8 @@ class GameWorker(Generic[GameT], object):
     RECHECK_INTERVAL_S = 0.1
     WAIT_FRAC = 0.4
 
-    def __init__(self, game_type: type[GameT], *,
-                 num_games: int, output_games: mpQueueGen[tuple[str, GameT]],
+    def __init__(self, game_type: type[GameBase[GameStateT]], *,
+                 num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
@@ -45,7 +44,7 @@ class GameWorker(Generic[GameT], object):
         self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
         self.out_queue:     mpQueueGen[list[AZ_NodeBatchRequest] | None]   = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameT]]                  = output_games
+        self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[AZ_SimulationReturnType | None]  = []
@@ -120,10 +119,10 @@ class GameWorker(Generic[GameT], object):
         requests: list[AZ_NodeBatchRequest] = []
         first_request_time = 0.0
         while True:
-            request = self.staging_out_queue.get()
             if not requests:
+                request = self.staging_out_queue.get()
                 first_request_time = time.perf_counter()
-            requests.append(request)
+                requests.append(request)
             
             # Drain the staging queue for more requests to batch together.
             while True:
@@ -157,23 +156,17 @@ class GameWorker(Generic[GameT], object):
                  self.received_results)
             )
 
-    def run_game(self, thread_id: int, game: GameT) -> None:
+    def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
-        while True:
-            # Check if game has ended (which can't happen on first move)
-            # Need to make this assumption due to the arguments required.
-            if len(game.action_history) == 0:
-                pass
-            else:
-                _, terminated = game.get_value_and_terminated(game.action_history[-1])
-                if terminated:
-                    break
 
-            logging.debug(f"thread {thread_id} iteration {len(game.action_history)}: {game.action_history}")
+        # player
+        first_player = game.current_player
+        while True:
+            logging.debug(f"thread {thread_id} move {len(game.state_history)}")
+
             # Game after last move is still going, create new MCTS instance.
             MCTS_instance = self.MCTS_factory.make_instance(game=game)
-
-            while MCTS_instance.root.visits < MCTS_instance.rollouts:
+            while MCTS_instance.root.visits <= MCTS_instance.rollouts:
                 # While not enough rollouts:
                 logging.debug(f"thread {thread_id} {MCTS_instance.root.visits} visits, not enough")
                 # Make next batch
@@ -207,21 +200,33 @@ class GameWorker(Generic[GameT], object):
 
             # Make move
             root = MCTS_instance.root
-            children_details = [(
-                    child.visits / root.visits if MCTS_instance.rollouts else nan,
-                    # (child.value_sum / child.visits) if child.visits else nan,
-                    # root.get_ucb(child),
-                    # child.visits,
-                    child.parent_action if child.parent_action is not None else -1)
-                for child in root.children
-            ]
-            best_action = max(children_details, key=lambda x: x[0])[1]
-            game.make_move(best_action)
-            logging.debug(f"thread {thread_id} made move {best_action}")
+            action_probs = np.zeros(self.game_type.action_size, dtype=np.float32)
+            for child in root.children:
+                action_probs[child.parent_action] = child.visits
+            action_probs /= np.sum(action_probs, dtype=np.float32)
 
+            game.state_history.append(game.state.neutral_state(game.current_player))
+            game.action_prob_history.append(action_probs)
+
+            action = np.random.choice(self.game_type.action_size, p=action_probs)
+            game.make_move(action)
+
+            logging.debug(f"thread {thread_id} made move {action}")
             with self.metrics_lock:
                 self.total_moves += 1
-                # self.thread_total_moves[thread_id] += 1
+
+            value, terminated = game.get_value_and_terminated(action)
+            if terminated:
+                assert len(game.state_history) == len(game.action_prob_history)
+                hist_player = first_player
+                last_player = game.get_opponent(game.current_player)
+
+                for _ in game.action_prob_history:
+                    outcome = value if hist_player == last_player else -value
+                    game.outcome.append(outcome)
+                    hist_player = game.get_opponent(hist_player)
+
+                break
 
         # Game finished
         logging.info(f"thread {thread_id} finished game")

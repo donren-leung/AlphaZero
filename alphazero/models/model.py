@@ -1,15 +1,24 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from alphazero.games.GameBase import GameBase
 
 class ResNet(nn.Module):
-    def __init__(self, game_type: GameBase, num_resBlocks, num_channels, device):
+    def __init__(self,
+                 game_type: GameBase,
+                 num_resBlocks: int,
+                 num_channels: int,
+                 head_hidden_size: int,
+                 device: torch.device,
+                 state_dict: dict | None = None,
+                 **kwargs
+    ):
         super().__init__()
 
         self.device = device
         self.startBlock = nn.Sequential(
-            nn.Conv2d(1, num_channels, kernel_size=3, padding=1),
+            nn.Conv2d(3, num_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(num_channels),
             nn.ReLU()
         )
@@ -19,23 +28,26 @@ class ResNet(nn.Module):
         )
 
         self.policyHead = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(num_channels, head_hidden_size, kernel_size=3, padding=1),
+            nn.BatchNorm2d(head_hidden_size),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(16 * game_type.row_count * game_type.col_count, game_type.action_size)
+            nn.Linear(head_hidden_size * game_type.row_count * game_type.col_count, game_type.action_size)
         )
 
         self.valueHead = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(num_channels, head_hidden_size, kernel_size=3, padding=1),
+            nn.BatchNorm2d(head_hidden_size),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(16 * game_type.row_count * game_type.col_count, 1),
+            nn.Linear(head_hidden_size * game_type.row_count * game_type.col_count, 1),
             nn.Tanh()
         )
 
         self.to(device)
+
+        if state_dict is not None:
+            self.load_state_dict(state_dict)
 
     def forward(self, x):
         x = self.startBlock(x)

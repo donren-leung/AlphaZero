@@ -1,6 +1,6 @@
 from collections import defaultdict
 from multiprocessing.context import BaseContext
-from typing import Generic, TypeVar
+from typing import Callable, Generic, TypeVar
 import queue
 from queue import Queue
 import time
@@ -70,7 +70,7 @@ class GPU_AZ_Worker(object):
     # 5 ms after first request
     MAX_WAIT_S = 0.005
     MAX_PREFETCH = 3
-    RESPONSE_COOL_DOWN_S = 0.005
+    RESPONSE_COOL_DOWN_S = 0.001
     METRICS_INTERVAL_S = 0.5
 
     def __init__(self,
@@ -103,11 +103,10 @@ class GPU_AZ_Worker(object):
             self.gpu_compute(ready_batch)
 
     def gpu_compute(self, batch: list[AZ_NodeBatchRequest]) -> None:
-        # Batch up the game state and action pairs into a tensor
-        x = torch.stack([request.state.to_tensor() for request in batch]).to(self.model.device)
-
-        # Call GPU
         with torch.inference_mode():
+            # Batch up the game state and action pairs into a tensor
+            x = torch.stack([request.state.to_tensor() for request in batch]).to(self.model.device).to(torch.float32)
+            # Call GPU
             policy_batch, value_batch = self.model(x)
             policy_batch = torch.softmax(policy_batch, dim=1)
 
@@ -122,6 +121,7 @@ class GPU_AZ_Worker(object):
 
     def request_batch_d(self) -> None:
         pending: list[AZ_NodeBatchRequest] = []
+        deadline = time.monotonic() + self.MAX_WAIT_S
 
         while True:
             # Start the next batch with any overflow from the previous one.
@@ -131,18 +131,10 @@ class GPU_AZ_Worker(object):
             if len(requests) == self.batch_size:
                 # If we already have a full batch, don't block for more.
                 self.ready_batches.put(requests)
+                deadline = time.monotonic() + self.MAX_WAIT_S
                 continue
 
             with self.inbox.consumer_lock():
-                # Block indefinitely for the FIRST request.
-                first = self.inbox.get()
-
-                if first is None:
-                    break
-                requests.extend(first)
-                deadline = time.monotonic() + self.MAX_WAIT_S
-
-                # Once at least one request exists, don't block indefinitely.
                 while len(requests) < self.batch_size:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -160,25 +152,32 @@ class GPU_AZ_Worker(object):
                     requests.extend(request[:space])
                     pending.extend(request[space:])
 
-            self.ready_batches.put(requests)
+            if requests:
+                self.ready_batches.put(requests)
+            deadline = time.monotonic() + self.MAX_WAIT_S
 
     def response_d(self) -> None:
         # Per-worker list of pending responses containing tuples of (thread_id, result)
         pending: defaultdict[int, list[tuple[int, AZ_SimulationReturnType]]] = defaultdict(list)
 
         while True:
+            time.sleep(self.RESPONSE_COOL_DOWN_S)
             # Block until at least one result exists.
-            worker_id, thread_id, result = self.ready_responses.get()
-            pending[worker_id].append((thread_id, result))
-
-            # Then drain everything currently available.
-            while True:
-                try:
-                    worker_id, thread_id, result = self.ready_responses.get(block=False)
-                except queue.Empty:
-                    break
-
+            try:
+                worker_id, thread_id, result = self.ready_responses.get(timeout=self.RESPONSE_COOL_DOWN_S)
                 pending[worker_id].append((thread_id, result))
+
+                # Then drain everything currently available.
+                while True:
+                    try:
+                        worker_id, thread_id, result = self.ready_responses.get(block=False)
+                    except queue.Empty:
+                        break
+
+                    pending[worker_id].append((thread_id, result))
+
+            except queue.Empty:
+                pass
 
             # Process the pending responses
             # Try every worker rather than getting stuck on one.
@@ -196,10 +195,12 @@ class GPU_AZ_Worker(object):
                     continue
 
                 del pending[worker_id]
-            time.sleep(self.RESPONSE_COOL_DOWN_S)
 
 class PoolFactory(object):
-    def __init__(self, pool_type: type[CPU_RandomRollout_Worker] | type[GPU_AZ_Worker], model_args: dict | None = None):
+    def __init__(self,
+                 pool_type: type[CPU_RandomRollout_Worker] | type[GPU_AZ_Worker],
+                 model_args: dict | None = None):
+
         self.pool_type = pool_type
         self.model_args = model_args
 

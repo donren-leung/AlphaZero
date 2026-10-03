@@ -4,6 +4,7 @@ from typing import Generic, TypeVar, ClassVar, Type, final, Literal
 
 from .GameStateBase import GameStateBase
 
+import numpy as np
 from numpy import int8, bool_
 from numpy.typing import NDArray
 
@@ -16,7 +17,9 @@ class GameBase(Generic[GameStateT], ABC):
     row_count: ClassVar[int]
     col_count: ClassVar[int]
 
-    __slots__ = ["state", "action_history", "current_player"]
+    __slots__ = ["state", "action_history",
+                 "state_history", "action_prob_history", "outcome",
+                 "current_player"]
 
     def __init__(self, state: GameStateT | None = None, starting_player: int=1) -> None:
         if state is None:
@@ -25,7 +28,11 @@ class GameBase(Generic[GameStateT], ABC):
             self.state = state
 
         # For parallel games
-        self.action_history: list[int] = []
+        self.action_history:        list[int] = []
+        self.state_history:         list[GameStateT] = []
+        self.action_prob_history:   list[NDArray[np.float32]] = []
+        self.outcome:               list[int] = []
+
         self.current_player: int = starting_player
 
     @classmethod
@@ -59,11 +66,14 @@ class GameBase(Generic[GameStateT], ABC):
 
     @final
     @classmethod
-    def get_opponent(self, player: int) -> int:
+    def get_opponent(cls, player: int) -> int:
         return player * -1
 
     def _switch_current_player(self) -> None:
         self.current_player = self.get_opponent(self.current_player)
+
+    def neutral_state(self) -> GameStateT:
+        return self.state.neutral_state(self.current_player)
 
     @abstractmethod
     def __repr__(self) -> str:

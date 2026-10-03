@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
+from typing import Self
 
-from numpy import int8, bool_
+import numpy as np
 from numpy.typing import NDArray
 import torch
 
-type State = NDArray[int8]
+type State = NDArray[np.int8]
 
 class GameStateBase(ABC):
     __slots__ = ["state"]
@@ -12,11 +13,11 @@ class GameStateBase(ABC):
         self.state = state
 
     @abstractmethod
-    def get_legal_actions(self, player: int) -> NDArray[bool_]:
+    def get_legal_actions(self, player: int) -> NDArray[np.bool_]:
         ...
 
     @abstractmethod
-    def get_next_state(self, action: int, player: int, copy: bool=True) -> 'GameStateBase':
+    def get_next_state(self, action: int, player: int, copy: bool=True) -> Self:
         ...
 
     # @abstractmethod
@@ -35,12 +36,26 @@ class GameStateBase(ABC):
         ...
 
     def to_tensor(self) -> torch.Tensor:
-        return torch.tensor(self.state, dtype=torch.float32).unsqueeze(0)
+        # return torch.tensor(self.state, dtype=torch.int8).unsqueeze(0)
+        return torch.from_numpy(
+            np.stack([
+                self.state == -1,
+                self.state == 0,
+                self.state == 1,
+            ]).astype(np.int8, copy=False)
+        )
+
+    # @classmethod
+    # def neutral_state(cls, state: 'GameStateBase', player: int) -> 'GameStateBase':
+    #     return cls(state.state * player)
+
+    def neutral_state(self, player: int) -> Self:
+        return self.__class__(self.state * player)
 
     @abstractmethod
     def __str__(self) -> str:
         ...
 
     @abstractmethod
-    def __copy__(self) -> 'GameStateBase':
+    def __copy__(self) -> Self:
         ...

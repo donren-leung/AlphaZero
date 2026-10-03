@@ -106,7 +106,7 @@ class MCTS_Instance(object):
                 worker_id,
                 thread_id,
                 curr.player,
-                curr.state
+                curr.state.neutral_state(curr.player)
             )
             # curr.expand()
             # actions_and_states = []
@@ -151,7 +151,7 @@ class Node(object):
         # If terminal node, assign value on first simulation and return it
         self.value: float | None = None
         # Prior probability of this node. Not initialised until the network returns.
-        self.prior_prob: float | None = prior_prob
+        self.prior_prob: float = prior_prob
 
         self.value_sum: float = 0
         self.visits: int = 0
@@ -178,7 +178,7 @@ class Node(object):
     def get_ucb(self, child: Node) -> float:
         assert child is not None
         assert isinstance(child.prior_prob, float) and 0.0 <= child.prior_prob <= 1.0
-        q = child.value_sum / child.visits if child.visits else 0.0
+        q = (child.value_sum / child.visits + 1) / 2 if child.visits else 0.0
         u = (
             MCTS_Factory.exploration
             * child.prior_prob
@@ -204,6 +204,7 @@ class Node(object):
 
         norm_policy = mask_and_norm(valid_actions, policy)
         for action_idx in np.flatnonzero(valid_actions):
+            action_idx = int(action_idx)
             new_state = curr_state.get_next_state(action_idx, self.player)
             child = Node(
                 parent=self,
