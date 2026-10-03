@@ -131,18 +131,11 @@ class AlphaZero:
             policy_targets = [policy for _, policy, _ in sample]
             value_targets = [value for _, _, value in sample]
 
-            state_tensor = torch.stack([
-                state.to_tensor() for state in states
-            ]).to(dtype=torch.float32)
+            state_tensor = torch.stack([state.to_tensor() for state in states]).to(dtype=torch.float32)
 
-            policy_targets_tensor = torch.from_numpy(
-                np.stack(policy_targets)
-            ).to(dtype=torch.float32)
+            policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to(dtype=torch.float32)
 
-            value_targets_tensor = torch.tensor(
-                value_targets,
-                dtype=torch.float32,
-            ).reshape(-1, 1)
+            value_targets_tensor = torch.tensor(value_targets, dtype=torch.float32).reshape(-1, 1).to(dtype=torch.float32)
 
             out_policy, out_value = self.model(state_tensor)
 
@@ -150,9 +143,9 @@ class AlphaZero:
             value_loss = F.mse_loss(out_value, value_targets_tensor)
             loss = policy_loss + value_loss
 
-            self.optimizer.zero_grad() # change to self.optimizer
+            self.optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step() # change to self.optimizer
+            self.optimizer.step()
 
     def learn(self):
         for iteration in range(self.args.iter):
