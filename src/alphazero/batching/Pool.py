@@ -82,12 +82,11 @@ class GPU_AZ_Worker(object):
 
         self.batch_size = model_args["batch_size"]
         model_args = {k: v for k, v in model_args.items() if k != "batch_size"}
+        self.device = torch.device("cuda")
         self.model = ResNet(**model_args)
 
     def run(self) -> None:
-        device = torch.device("cuda")
-        self.model = self.model.to(device)
-        self.model.device = device
+        self.model.to(self.device)
         self.model.eval()
 
         self.ready_batches: Queue[list[AZ_NodeRequest]] = Queue(maxsize=self.MAX_PREFETCH)
@@ -105,7 +104,7 @@ class GPU_AZ_Worker(object):
     def gpu_compute(self, batch: list[AZ_NodeRequest]) -> None:
         with torch.inference_mode():
             # Batch up the game state and action pairs into a tensor
-            x = torch.stack([request.state.to_tensor() for request in batch]).to(self.model.device).to(torch.float32)
+            x = torch.stack([request.state.to_tensor() for request in batch]).to(self.device).to(torch.float32)
             # Call GPU
             policy_batch, value_batch = self.model(x)
             policy_batch = torch.softmax(policy_batch, dim=1)

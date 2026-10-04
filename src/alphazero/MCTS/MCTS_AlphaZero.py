@@ -69,6 +69,8 @@ class MCTS_Instance(object):
         state = game.state
         assert isinstance(state, GameStateBase)
 
+        self.model = kwargs.get('model', None)
+
         # TODO: recover from a previous MCTS tree if possible, instead of starting from scratch.
         self.root = Node(None, None, 1.0, state, player)
         self.rollouts = rollouts
@@ -121,18 +123,16 @@ class MCTS_Instance(object):
             curr.state.neutral_state(curr.player)
         )
 
-    def search(self, model: torch.nn.Module) -> tuple[npt.NDArray[np.float32], float]:
-        """
-        Non-batched MCTS search. For use in a single game.
-        """
+    def _search(self) -> None:
+        assert self.model is not None, "Model must be set before calling search()"
         while self.root.visits <= self.rollouts:
             node, request_or_response = self.one_round_batch(0, 0)
 
             if isinstance(request_or_response, AZ_NodeRequest):
-                model.eval()
+                self.model.eval()
                 with torch.no_grad():
                     tensor_state = request_or_response.state.to_tensor().unsqueeze(0).to("cuda").to(torch.float32)
-                    policy, value = model(tensor_state)
+                    policy, value = self.model(tensor_state)
 
                     policy = torch.softmax(policy, dim=1).squeeze(0).detach().cpu().numpy()
                     value = value.item()
@@ -142,6 +142,22 @@ class MCTS_Instance(object):
             else:
                 # Cached/terminal result; no request is sent.
                 node.backpropogate(1, request_or_response[1], True)
+
+    def search(self) -> MCTS_Result:
+        self._search()
+        children_details = [(
+                child.visits / self.root.visits if self.rollouts else math.nan,
+                (child.value_sum / child.visits) if child.visits else math.nan,
+                self.root.get_ucb(child),
+                child.visits,
+                child.parent_action if child.parent_action is not None else -1)
+            for child in self.root.children
+        ]
+        best_action = max(children_details, key=lambda x: x[0])[4]
+        return MCTS_Result(children_details, best_action)
+
+    def search_concise(self) -> tuple[npt.NDArray[np.float32], float]:
+        self._search()
 
         action_probs = np.zeros(self.game.action_size, dtype=np.float32)
         for child in self.root.children:

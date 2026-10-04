@@ -6,17 +6,15 @@ from alphazero.games.GameBase import GameBase
 
 class ResNet(nn.Module):
     def __init__(self,
-                 game_type: GameBase,
+                 game_spatial_size: int,
+                 game_action_size: int,
                  num_resBlocks: int,
                  num_channels: int,
                  head_hidden_size: int,
-                 device: torch.device,
                  state_dict: dict | None = None,
                  **kwargs
     ):
         super().__init__()
-
-        self.device = device
         self.startBlock = nn.Sequential(
             nn.Conv2d(3, num_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(num_channels),
@@ -32,7 +30,7 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(head_hidden_size),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(head_hidden_size * game_type.row_count * game_type.col_count, game_type.action_size)
+            nn.Linear(head_hidden_size * game_spatial_size, game_action_size)
         )
 
         self.valueHead = nn.Sequential(
@@ -40,11 +38,9 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(head_hidden_size),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(head_hidden_size * game_type.row_count * game_type.col_count, 1),
+            nn.Linear(head_hidden_size * game_spatial_size, 1),
             nn.Tanh()
         )
-
-        self.to(device)
 
         if state_dict is not None:
             self.load_state_dict(state_dict)

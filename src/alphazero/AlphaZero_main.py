@@ -1,5 +1,6 @@
 import argparse
 import multiprocessing as mp
+import json
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 import random
@@ -22,6 +23,7 @@ from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 def self_play(
+         game_type: type[GameBase[GameStateBase]],
          ROLLOUTS: int,
          PROCESSES: int,
          TARGET_GAME_WORKERS: int,
@@ -55,7 +57,7 @@ def self_play(
         p.start()
 
     for i, results_queue in enumerate(results_queues):
-        game_worker = GameWorker(model_args["game_type"],
+        game_worker = GameWorker(game_type,
                                  num_games=GAME_WORKER_GAMES,
                                  output_games=all_game_results,
                                  in_queue=results_queue,
@@ -101,8 +103,6 @@ class AlphaZero:
         self.optimizer = optimizer
         self.model_args = model_args
 
-        self.model_args["state_dict"] = self.model.state_dict()
-
         game_name = args.game_type.__name__.removesuffix("Game").lower()
         settings_name = (
             f"{game_name}"
@@ -118,9 +118,21 @@ class AlphaZero:
         self.artifact_dir = project_root / "artifacts" / settings_name
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    def self_play(self, ROLLOUTS: int, PROCESSES: int, TARGET_GAME_WORKERS: int, GAME_WORKER_GAMES: int) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+        args_payload = {k: v for k, v in model_args.items() if k != "batch_size"}
+        args_path = self.artifact_dir / "args.json"
+        with open(args_path, "w") as f:
+            json.dump(args_payload, f, indent=4)
+
         self.model_args["state_dict"] = self.model.state_dict()
-        return self_play(ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
+
+    def self_play(self,
+                  GAME_TYPE: type[GameBase[GameStateBase]],
+                  ROLLOUTS: int,
+                  PROCESSES: int,
+                  TARGET_GAME_WORKERS: int,
+                  GAME_WORKER_GAMES: int) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+        self.model_args["state_dict"] = self.model.state_dict()
+        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
     def train(self, memory: list[tuple[GameStateBase, NDArray[np.float32], int]]):
         random.shuffle(memory)
@@ -149,37 +161,37 @@ class AlphaZero:
 
     def learn(self):
         for iteration in range(self.args.iter):
-            memory = self_play(
+            memory = self.self_play(
+                self.args.game_type,
                 self.args.rollouts,
                 self.args.processes,
                 self.args.game_workers,
                 self.args.games_per_worker,
-                self.model_args
             )
 
             self.model.train()
             for epoch in trange(self.args.epochs):
                 self.train(memory)
 
-                torch.save(
-                    self.model.state_dict(),
-                    self.artifact_dir / f"model_{iteration:03d}.pt",
-                )
+            torch.save(
+                self.model.state_dict(),
+                self.artifact_dir / f"model_{iteration:03d}.pt",
+            )
 
-                torch.save(
-                    self.optimizer.state_dict(),
-                    self.artifact_dir / f"optimizer_{iteration:03d}.pt",
-                )
+            torch.save(
+                self.optimizer.state_dict(),
+                self.artifact_dir / f"optimizer_{iteration:03d}.pt",
+            )
 
 if __name__ == "__main__":
     args = parse_args()
 
     model_args = {
-        "game_type": args.game_type,
-        "num_resBlocks": 3,
-        "num_channels": 32,
+        "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
+        "game_action_size": args.game_type.action_size,
+        "num_resBlocks": 6,
+        "num_channels": 64,
         "head_hidden_size": 16,
-        "device": "cpu",
         "batch_size": args.batch_size,
         "state_dict": None,
     }
