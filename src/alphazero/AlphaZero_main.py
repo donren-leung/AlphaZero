@@ -197,7 +197,7 @@ if __name__ == "__main__":
     }
 
     model = ResNet(**model_args)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
     az = AlphaZero(args, model, optimizer, model_args)
     az.learn()

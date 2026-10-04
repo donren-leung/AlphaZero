@@ -12,7 +12,7 @@ import numpy.typing as npt
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
 from alphazero.games.GameBase import GameBase, GameStateBase
-from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
+from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, mask_and_norm
 
 GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 GameT = GameBase[GameStateT]
@@ -190,7 +190,23 @@ class GameWorker(Generic[GameStateT], object):
                     assert eval_result is not None
 
                     y_policy, y_value = eval_result
+
                     # Update prior probability from the neural network output
+                    if node is MCTS_instance.root:
+                        # Introduce Dirichlet noise to root node for exploration
+                        assert node.state is not None
+                        legal_actions = node.state.get_legal_actions(node.player)
+                        y_policy = mask_and_norm(legal_actions, y_policy)
+
+                        legal_idxs = np.flatnonzero(legal_actions)
+                        alpha = self.MCTS_factory.DIRICHLET_CONST / len(legal_idxs)
+                        noise = np.random.dirichlet(np.full(len(legal_idxs), alpha))
+
+                        y_policy[legal_idxs] = (
+                            (1 - self.MCTS_factory.dirichlet_epsilon) * y_policy[legal_idxs]
+                            + self.MCTS_factory.dirichlet_epsilon * noise
+                        )
+
                     node.expand(y_policy)
                     node.backpropogate(1, y_value, False)
                 else:
@@ -210,7 +226,10 @@ class GameWorker(Generic[GameStateT], object):
             game.state_history.append(game.state.neutral_state(game.current_player))
             game.action_prob_history.append(action_probs)
 
-            action = np.random.choice(self.game_type.action_size, p=action_probs)
+            temperature_probs = np.power(action_probs, 1.0 / self.MCTS_factory.temperature)
+            temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
+
+            action = np.random.choice(self.game_type.action_size, p=temperature_probs)
             game.make_move(action)
 
             logging.debug(f"thread {thread_id} made move {action}")

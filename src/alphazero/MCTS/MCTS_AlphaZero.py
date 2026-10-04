@@ -28,6 +28,9 @@ class MCTS_Factory(object):
     DEFAULT_EXPLORATION_PARAM = 1.41
     debug = 0
     exploration = DEFAULT_EXPLORATION_PARAM
+    temperature = 1.0
+    DIRICHLET_CONST = 10
+    dirichlet_epsilon = 0.25
 
     def __init__(self, rollouts: int) -> None:
         self.debug = 0
@@ -40,6 +43,10 @@ class MCTS_Factory(object):
     def set_exploration_param(self, exploration: float) -> None:
         self.exploration = exploration
         self.__class__.exploration = exploration
+
+    def set_temperature(self, temperature: float) -> None:
+        self.temperature = temperature
+        self.__class__.temperature = temperature
 
     def make_instance(self, **kwargs) -> MCTS_Instance:
         return MCTS_Instance(self.rollouts, MCTS_factory=self, **kwargs)
@@ -105,6 +112,11 @@ class MCTS_Instance(object):
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value}")
             return curr, (np.empty(0, dtype=np.float32), curr.value)
+
+        # Begrudgingly instantiate the state of this leaf node.
+        if curr.state is None:
+            assert curr.parent is not None and curr.parent_action is not None
+            curr.state = curr.parent.get_next_state(curr.parent_action)
 
         if curr.parent_action is not None:
             reward, terminated = curr.state.get_value_and_terminated(
@@ -181,7 +193,7 @@ class Node(object):
                  parent: Node | None,
                  parent_action: int | None,
                  prior_prob: float,
-                 state: GameStateBase,
+                 state: GameStateBase | None,
                  player: int) -> None:
         if parent is None:
             assert parent_action is None
@@ -197,9 +209,7 @@ class Node(object):
 
         # If terminal node, assign value on first simulation and return it
         self.value: float | None = None
-        # Prior probability of this node. Not initialised until the network returns.
         self.prior_prob: float = prior_prob
-
         self.value_sum: float = 0
         self.visits: int = 0
 
@@ -225,7 +235,7 @@ class Node(object):
     def get_ucb(self, child: Node) -> float:
         assert child is not None
         assert isinstance(child.prior_prob, float) and 0.0 <= child.prior_prob <= 1.0
-        q = (-child.value_sum / child.visits + 1) / 2 if child.visits else 0.0
+        q = (-child.value_sum / child.visits) if child.visits else 0.0
         u = (
             MCTS_Factory.exploration
             * child.prior_prob
@@ -237,8 +247,7 @@ class Node(object):
 
     def expand(self, policy: npt.NDArray[np.float32]) -> None:
         assert len(self.children) == 0, f"Node already has children: {self.children}."
-        # if self.parent is not None:
-        #     assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
+        assert self.state is not None, "Node state must be set before expanding."
 
         curr_state = self.state
         valid_actions = curr_state.get_legal_actions(self.player)
@@ -252,15 +261,19 @@ class Node(object):
         norm_policy = mask_and_norm(valid_actions, policy)
         for action_idx in np.flatnonzero(valid_actions):
             action_idx = int(action_idx)
-            new_state = curr_state.get_next_state(action_idx, self.player)
+            # new_state = curr_state.get_next_state(action_idx, self.player)
             child = Node(
                 parent=self,
                 parent_action=action_idx,
                 prior_prob=float(norm_policy[action_idx]),
-                state=new_state,
+                state=None,
                 player=-1 * self.player
             )
             self.children.append(child)
+
+    def get_next_state(self, action_idx: int) -> GameStateBase:
+        assert self.state is not None, "Node state must be set before getting next state."
+        return self.state.get_next_state(action_idx, self.player)
 
     def simulate(self, executor: ProcessPoolExecutor, pending_simulations: dict[Future, Node],
                  *, target_sims: int) -> None:
