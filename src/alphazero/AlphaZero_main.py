@@ -14,7 +14,7 @@ from tqdm import trange
 from alphazero.games.GameBase import GameBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
 
-from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse
+from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
 from .games.GameStateBase import GameStateBase
@@ -39,7 +39,7 @@ def self_play(
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
-    request_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None] = mpQueueGen(ctx)
+    request_queue: mpQueueGen[list[AZ_NodeRequest] | None] = mpQueueGen(ctx)
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]

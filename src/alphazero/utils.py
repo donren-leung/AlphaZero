@@ -237,3 +237,124 @@ def metrics_daemon(
         interval_start = now
         next_print = now + print_interval_s
 
+
+def metrics_daemon_CPU(
+    stop_event: threading.Event,
+    metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
+    counter: ThreadSafeCounter,
+    expected_results: int,
+    print_interval_s: float = 2.5,
+) -> None:
+    """
+    Consume cumulative GameWorker metric snapshots and periodically print
+    per-worker and total move throughput.
+
+    Queue messages:
+        (worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results)
+    """
+    latest_totals: dict[int, tuple[int, int, int, int, int]] = {}
+    previous_totals: dict[int, tuple[int, int, int, int, int]] = {}
+
+    interval_start = time.perf_counter()
+    next_print = interval_start + print_interval_s
+
+    while not stop_event.is_set():
+        now = time.perf_counter()
+        timeout = max(0.0, next_print - now)
+
+        try:
+            worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(timeout=timeout)
+            latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+        except queue.Empty:
+            pass
+
+        now = time.perf_counter()
+        if now < next_print:
+            continue
+
+        elapsed = now - interval_start
+
+        worker_sent_eff: dict[int, float] = {}
+        worker_rec_node_rates: dict[int, float] = {}
+        worker_rec_eff: dict[int, float] = {}
+
+        total_moves_delta = 0
+        total_sent_batches = 0
+        total_sent_requests = 0
+        total_received_batches = 0
+        total_received_results = 0
+
+        for worker_id, (total_moves, sent_batches, sent_requests, received_batches, received_results) in latest_totals.items():
+            previous = previous_totals.get(worker_id)
+            if previous is None:
+                # First observation establishes the baseline.
+                previous_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+                continue
+
+            deltas = tuple(total - prev for total, prev in zip((total_moves, sent_batches, sent_requests, received_batches, received_results), previous))
+            worker_sent_eff[worker_id] = deltas[2] / (deltas[1]) if deltas[1] > 0 else 0.0
+            worker_rec_node_rates[worker_id] = deltas[4] / elapsed
+            worker_rec_eff[worker_id] = deltas[4] / (deltas[3]) if deltas[3] > 0 else 0.0
+
+            total_moves_delta += deltas[0]
+            total_sent_batches += deltas[1]
+            total_sent_requests += deltas[2]
+            total_received_batches += deltas[3]
+            total_received_results += deltas[4]
+
+            previous_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+
+        if worker_rec_node_rates:
+            total_move_rate = total_moves_delta / elapsed
+            total_sent_batch_rate = total_sent_batches / elapsed
+            total_sent_node_rate = total_sent_requests / elapsed
+            total_received_node_rate = total_received_results / elapsed
+            total_received_batch_rate = total_received_batches / elapsed
+            # total_sent_eff = total_sent_requests / elapsed
+
+            node_rates = list(worker_rec_node_rates.values())
+            sent_effs = list(worker_sent_eff.values())
+            rec_effs = list(worker_rec_eff.values())
+
+            min_node_rate = min(node_rates)
+            mean_node_rate = sum(node_rates) / len(node_rates)
+            max_node_rate = max(node_rates)
+
+            min_sent_efficiency = min(sent_effs)
+            mean_sent_efficiency = sum(sent_effs) / len(sent_effs)
+            max_sent_efficiency = max(sent_effs)
+
+            min_rec_efficiency = min(rec_effs)
+            mean_rec_efficiency = sum(rec_effs) / len(rec_effs)
+            max_rec_efficiency = max(rec_effs)
+
+            def human_readable(num: float) -> str:
+                for threshold, suffix in [(1_000_000, "M"), (1_000, "K"), (1, "")]:
+                    if num >= threshold:
+                        scaled = num / threshold
+                        # Format to 3 significant figures and strip trailing zeros/dot
+                        formatted = f"{scaled:.3f}"[:4].rstrip(".")
+                        return f"{formatted}{suffix}"
+                return f"{num:.3g}"
+
+            print(
+                f"[Throughput] "
+                f"{elapsed:1.1f}s :: "
+                f"{counter.value:>5}/{expected_results} games ::"
+                f"{total_move_rate:4.0f} moves/s :: "
+                f"SENT: "
+                f"{human_readable(total_sent_node_rate)} nps "
+                f"{human_readable(total_sent_batch_rate)} bps "
+                f"/batch {min_sent_efficiency:3.0f}-{mean_sent_efficiency:3.0f}-{max_sent_efficiency:3.0f} "
+                f"| REC: "
+                f"{human_readable(total_received_node_rate)} nps "
+                f"{human_readable(total_received_batch_rate)} bps "
+                f"nodes/worker={min_node_rate:4.0f}-{mean_node_rate:4.0f}-{max_node_rate:4.0f} "
+                f"/batch {min_rec_efficiency:3.0f}-{mean_rec_efficiency:3.0f}-{max_rec_efficiency:3.0f} ",
+
+                # f"| {workers_text}",
+                flush=True,
+            )
+
+        interval_start = now
+        next_print = now + print_interval_s

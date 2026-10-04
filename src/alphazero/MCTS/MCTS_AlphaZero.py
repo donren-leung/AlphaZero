@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from alphazero.batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
+from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
 
@@ -75,7 +75,7 @@ class MCTS_Instance(object):
         self.MCTS_factory = MCTS_factory
 
     def one_round_batch(self, worker_id: int, thread_id: int) -> \
-                            tuple[Node, AZ_NodeBatchRequest] | \
+                            tuple[Node, AZ_NodeRequest] | \
                             tuple[Node, AZ_SimulationReturnType]:
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
@@ -114,7 +114,7 @@ class MCTS_Instance(object):
                 value = -float(reward)
                 return curr, (np.empty(0, dtype=np.float32), value)
 
-        return curr, AZ_NodeBatchRequest(
+        return curr, AZ_NodeRequest(
             worker_id,
             thread_id,
             curr.player,
@@ -128,7 +128,7 @@ class MCTS_Instance(object):
         while self.root.visits <= self.rollouts:
             node, request_or_response = self.one_round_batch(0, 0)
 
-            if isinstance(request_or_response, AZ_NodeBatchRequest):
+            if isinstance(request_or_response, AZ_NodeRequest):
                 model.eval()
                 with torch.no_grad():
                     tensor_state = request_or_response.state.to_tensor().unsqueeze(0).to("cuda").to(torch.float32)

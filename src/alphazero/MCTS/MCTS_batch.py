@@ -216,6 +216,7 @@ class Node(object):
         curr_state = self.state
         valid_actions = curr_state.get_legal_actions(self.player)
         for action_idx in np.flatnonzero(valid_actions):
+            action_idx = int(action_idx)
             new_state = curr_state.get_next_state(action_idx, self.player)
             self.children.append(Node(self, action_idx, new_state, -1 * self.player))
 

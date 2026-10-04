@@ -4,7 +4,11 @@ import sys
 import argparse
 import multiprocessing as mp
 from multiprocessing.process import BaseProcess
+from threading import Thread, Event
 from typing import Type
+
+import numpy as np
+from numpy.typing import NDArray
 
 from .games.GameBase import GameBase
 from .games.TicTacToe import TicTacToeGame
@@ -14,6 +18,8 @@ from .MCTS.MCTS_batch import MCTS_Factory
 from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
 from .batching.GameWorker import GameWorker, mpQueueGen
 from .batching.Pool import PoolFactory, CPU_RandomRollout_Worker
+from .games.GameStateBase import GameStateBase
+from .utils import metrics_daemon_CPU, ThreadSafeCounter
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
 
@@ -108,6 +114,9 @@ def main(game_type: Type[GameBase],
     results_queues: list[mpQueueGen[NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
+    # Cumulative moves
+    worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
+
     for i in range(target_eval_workers):
         eval_worker = pool_factory.create_CPU_rollout_worker(request_queue, results_queues)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
@@ -115,9 +124,11 @@ def main(game_type: Type[GameBase],
 
     for i, results_queue in enumerate(results_queues):
         game_worker = GameWorker(game_type,
-                                 num_games=GAME_WORKER_GAMES, output_games=all_game_results,
+                                 num_games=GAME_WORKER_GAMES,
+                                 output_games=all_game_results,
                                  in_queue=results_queue,
                                  out_queue=request_queue,
+                                 metrics_queue=worker_metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
@@ -126,16 +137,30 @@ def main(game_type: Type[GameBase],
     for game_worker_p in game_worker_ps:
         game_worker_p.start()
 
+    # Start the metrics daemon
+    metrics_stop_event = Event()
+    counter = ThreadSafeCounter()
     expecting_results = TARGET_GAME_WORKERS * GAME_WORKER_GAMES
-    for _ in range(expecting_results):
-        id_, game = all_game_results.get()
+    metrics_daemon_thread = Thread(target=metrics_daemon_CPU, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
+    metrics_daemon_thread.start()
 
-        print(f"{id_=}")
-        print(game.action_history)
-        print(game.state)
+    games: list[GameBase] = []
+    for _ in range(expecting_results):
+        _, game = all_game_results.get()
+        counter.increment()
+        games.append(game)
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
+
+    metrics_stop_event.set()
+    metrics_daemon_thread.join()
+
+    print(games[0].action_history)
+    print(games[0].state)
+
+    print(games[-1].action_history)
+    print(games[-1].state)
 
 if __name__ == "__main__":
     args = parse_args()

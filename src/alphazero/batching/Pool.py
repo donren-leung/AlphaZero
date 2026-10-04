@@ -13,7 +13,7 @@ from alphazero.models.model import ResNet
 
 # from .GameWorker import mpQueueGen
 from .NodeBatch import NodeBatchRequest, NodeBatchResponse,  SimulationReturnType
-from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
+from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 
 T = TypeVar("T")
 
@@ -74,7 +74,7 @@ class GPU_AZ_Worker(object):
     METRICS_INTERVAL_S = 0.5
 
     def __init__(self,
-                 inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],
+                 inbox: mpQueueGen[list[AZ_NodeRequest] | None],
                  outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
                  model_args: dict):
         self.inbox = inbox
@@ -90,7 +90,7 @@ class GPU_AZ_Worker(object):
         self.model.device = device
         self.model.eval()
 
-        self.ready_batches: Queue[list[AZ_NodeBatchRequest]] = Queue(maxsize=self.MAX_PREFETCH)
+        self.ready_batches: Queue[list[AZ_NodeRequest]] = Queue(maxsize=self.MAX_PREFETCH)
         Thread(target=self.request_batch_d, args=[], daemon=True).start()
 
         self.ready_responses: Queue[tuple[int, int,  AZ_SimulationReturnType]] = Queue()
@@ -102,7 +102,7 @@ class GPU_AZ_Worker(object):
                 break
             self.gpu_compute(ready_batch)
 
-    def gpu_compute(self, batch: list[AZ_NodeBatchRequest]) -> None:
+    def gpu_compute(self, batch: list[AZ_NodeRequest]) -> None:
         with torch.inference_mode():
             # Batch up the game state and action pairs into a tensor
             x = torch.stack([request.state.to_tensor() for request in batch]).to(self.model.device).to(torch.float32)
@@ -120,7 +120,7 @@ class GPU_AZ_Worker(object):
             self.ready_responses.put((request.worker_id, request.thread_id, result))
 
     def request_batch_d(self) -> None:
-        pending: list[AZ_NodeBatchRequest] = []
+        pending: list[AZ_NodeRequest] = []
         deadline = time.monotonic() + self.MAX_WAIT_S
 
         while True:
@@ -214,7 +214,7 @@ class PoolFactory(object):
         return CPU_RandomRollout_Worker(inbox, outboxes)
 
     def create_AZ_GPU_worker(self,
-                            inbox: mpQueueGen[list[AZ_NodeBatchRequest] | None],
+                            inbox: mpQueueGen[list[AZ_NodeRequest] | None],
                             outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> GPU_AZ_Worker:
         assert self.pool_type in [GPU_AZ_Worker]
         assert self.model_args is not None

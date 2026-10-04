@@ -31,9 +31,8 @@ class NodeBatchResponse:
 # policy, value, terminal
 AZ_SimulationReturnType = tuple[npt.NDArray[np.float32], float]
 
-# TODO: rename to just Node
 @dataclass(slots=True, frozen=True)
-class AZ_NodeBatchRequest:
+class AZ_NodeRequest:
     worker_id: int
     thread_id: int
 

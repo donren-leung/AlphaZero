@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 
 from queue import Queue, Empty
@@ -8,7 +9,7 @@ from typing import Generic, TypeVar, Type
 import numpy as np
 import numpy.typing as npt
 
-from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
+from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
 from alphazero.games.GameBase import GameBase, GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
@@ -29,7 +30,7 @@ class GameWorker(Generic[GameStateT], object):
     def __init__(self, game_type: type[GameBase[GameStateT]], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
-                 out_queue: mpQueueGen[list[AZ_NodeBatchRequest] | None],
+                 out_queue: mpQueueGen[list[AZ_NodeRequest] | None],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
                  worker_id: int, MCTS_factory: MCTS_Factory):
         self.game_type = game_type
@@ -43,7 +44,7 @@ class GameWorker(Generic[GameStateT], object):
         self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
         self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
-        self.out_queue:     mpQueueGen[list[AZ_NodeBatchRequest] | None]   = out_queue
+        self.out_queue:     mpQueueGen[list[AZ_NodeRequest] | None]        = out_queue
         self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
@@ -58,13 +59,12 @@ class GameWorker(Generic[GameStateT], object):
         self.received_batches = 0
         self.received_results = 0
         self.active_games = 0
-        # self.thread_total_moves: list[int] = [0] * self.num_games
 
     def run(self) -> None:
         self.metrics_lock = Lock()
         self.outbound_cv = Condition()
 
-        self.staging_out_queue: Queue[AZ_NodeBatchRequest] = Queue()
+        self.staging_out_queue: Queue[AZ_NodeRequest] = Queue()
         Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.metrics_d, args=[], daemon=True).start()
@@ -116,7 +116,7 @@ class GameWorker(Generic[GameStateT], object):
             - at least 40% of active threads have requests, or
             - when the first request has been waiting for MAX_WAIT_S seconds.
         """
-        requests: list[AZ_NodeBatchRequest] = []
+        requests: list[AZ_NodeRequest] = []
         first_request_time = 0.0
         while True:
             if not requests:
@@ -141,8 +141,10 @@ class GameWorker(Generic[GameStateT], object):
                 requests = []
             else:
                 # If we don't have enough requests to send a batch, wait for more.
-                time.sleep(self.RECHECK_INTERVAL_S)
-                continue
+                if self.active_games >= 10:
+                    time.sleep(self.RECHECK_INTERVAL_S)
+                else:
+                    time.sleep((self.active_games + 1) / 10 * self.RECHECK_INTERVAL_S)
 
     def metrics_d(self) -> None:
         while True:
@@ -173,7 +175,7 @@ class GameWorker(Generic[GameStateT], object):
                 logging.debug(f"{MCTS_instance.root=}")
                 node, request_or_response = MCTS_instance.one_round_batch(self.worker_id, thread_id)
 
-                if isinstance(request_or_response, AZ_NodeBatchRequest):
+                if isinstance(request_or_response, AZ_NodeRequest):
                     # Send batch request to worker pool.
                     self.staging_out_queue.put(request_or_response)
 
