@@ -114,7 +114,7 @@ class AlphaZero:
             f"_e{args.epochs}"
         )
 
-        project_root = Path(__file__).resolve().parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         self.artifact_dir = project_root / "artifacts" / settings_name
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -124,7 +124,7 @@ class AlphaZero:
 
     def train(self, memory: list[tuple[GameStateBase, NDArray[np.float32], int]]):
         random.shuffle(memory)
-        for batchIdx in range(0, len(memory), self.args.batch_size):
+        for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
             states = [state for state, _, _ in sample]

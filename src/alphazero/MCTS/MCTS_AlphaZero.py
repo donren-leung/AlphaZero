@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
+import torch
 
 from alphazero.batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from alphazero.games.GameBase import GameBase
@@ -59,13 +60,14 @@ class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
     def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory, **kwargs) -> None:
         game: GameBase = kwargs['game']
-        assert issubclass(game.__class__, GameBase)
+        assert isinstance(game, GameBase)
+        self.game = game
 
         player = game.current_player
         assert player == -1 or player == 1
 
         state = game.state
-        assert issubclass(state.__class__, GameStateBase)
+        assert isinstance(state, GameStateBase)
 
         # TODO: recover from a previous MCTS tree if possible, instead of starting from scratch.
         self.root = Node(None, None, 1.0, state, player)
@@ -100,25 +102,54 @@ class MCTS_Instance(object):
         if curr.value is not None:
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value}")
-            return curr, (np.array([0.0]), curr.value)
-        else:
-            return curr, AZ_NodeBatchRequest(
-                worker_id,
-                thread_id,
-                curr.player,
-                curr.state.neutral_state(curr.player)
+            return curr, (np.empty(0, dtype=np.float32), curr.value)
+
+        if curr.parent_action is not None:
+            reward, terminated = curr.state.get_value_and_terminated(
+                curr.parent_action
             )
-            # curr.expand()
-            # actions_and_states = []
-            # for child in curr.children:
-            #     assert child.parent_action is not None
-            #     actions_and_states.append((child.parent_action, child.state,))
-            # return curr.children, AZ_NodeBatchRequest(
-            #     worker_id,
-            #     thread_id,
-            #     -1 * curr.player,
-            #     actions_and_states
-            # )
+            if terminated:
+                # reward describes the player who just moved;
+                # curr.player is that player's opponent.
+                value = -float(reward)
+                return curr, (np.empty(0, dtype=np.float32), value)
+
+        return curr, AZ_NodeBatchRequest(
+            worker_id,
+            thread_id,
+            curr.player,
+            curr.state.neutral_state(curr.player)
+        )
+
+    def search(self, model: torch.nn.Module) -> tuple[npt.NDArray[np.float32], float]:
+        """
+        Non-batched MCTS search. For use in a single game.
+        """
+        while self.root.visits <= self.rollouts:
+            node, request_or_response = self.one_round_batch(0, 0)
+
+            if isinstance(request_or_response, AZ_NodeBatchRequest):
+                model.eval()
+                with torch.no_grad():
+                    tensor_state = request_or_response.state.to_tensor().unsqueeze(0).to("cuda").to(torch.float32)
+                    policy, value = model(tensor_state)
+
+                    policy = torch.softmax(policy, dim=1).squeeze(0).detach().cpu().numpy()
+                    value = value.item()
+
+                node.expand(policy)
+                node.backpropogate(1, value, False)
+            else:
+                # Cached/terminal result; no request is sent.
+                node.backpropogate(1, request_or_response[1], True)
+
+        action_probs = np.zeros(self.game.action_size, dtype=np.float32)
+        for child in self.root.children:
+            action_probs[child.parent_action] = child.visits
+        action_probs /= np.sum(action_probs, dtype=np.float32)
+        value = self.root.value_sum / self.root.visits if self.root.visits > 0 else 0.0
+
+        return action_probs, value
 
 class Node(object):
     __slots__ = ["parent",
@@ -178,7 +209,7 @@ class Node(object):
     def get_ucb(self, child: Node) -> float:
         assert child is not None
         assert isinstance(child.prior_prob, float) and 0.0 <= child.prior_prob <= 1.0
-        q = (child.value_sum / child.visits + 1) / 2 if child.visits else 0.0
+        q = (-child.value_sum / child.visits + 1) / 2 if child.visits else 0.0
         u = (
             MCTS_Factory.exploration
             * child.prior_prob
@@ -222,9 +253,6 @@ class Node(object):
     def backpropogate(self, visits: int, total_value: float, terminal: bool,
                       *, stop_at_node: Node | None=None) -> None:
         self.value_sum += total_value
-        # TODO: remove
-        assert isinstance(visits, int) and visits > 0, f"visits must be a positive integer, got {visits=}"
-        
         self.visits += visits
         if terminal:
             single_value = total_value / visits

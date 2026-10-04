@@ -27,6 +27,8 @@ plugins = 'numpy.typing.mypy_plugin'
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.15.0"
+ipykernel = "^7.4.0"
+matplotlib = "^3.11.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
