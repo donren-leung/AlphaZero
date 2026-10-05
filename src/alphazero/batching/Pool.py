@@ -89,7 +89,7 @@ class GPU_AZ_Worker(object):
         self.model.to(self.device)
         self.model.eval()
 
-        self.ready_batches: Queue[list[AZ_NodeRequest]] = Queue(maxsize=self.MAX_PREFETCH)
+        self.ready_batches: Queue[list[AZ_NodeRequest] | None] = Queue(maxsize=self.MAX_PREFETCH)
         Thread(target=self.request_batch_d, args=[], daemon=True).start()
 
         self.ready_responses: Queue[tuple[int, int,  AZ_SimulationReturnType]] = Queue()
@@ -121,6 +121,7 @@ class GPU_AZ_Worker(object):
     def request_batch_d(self) -> None:
         pending: list[AZ_NodeRequest] = []
         deadline = time.monotonic() + self.MAX_WAIT_S
+        stop_requested = False
 
         while True:
             # Start the next batch with any overflow from the previous one.
@@ -145,6 +146,7 @@ class GPU_AZ_Worker(object):
                         break
 
                     if request is None:
+                        stop_requested = True
                         break
 
                     space = self.batch_size - len(requests)
@@ -153,6 +155,9 @@ class GPU_AZ_Worker(object):
 
             if requests:
                 self.ready_batches.put(requests)
+            if stop_requested:
+                self.ready_batches.put(None)
+                break
             deadline = time.monotonic() + self.MAX_WAIT_S
 
     def response_d(self) -> None:

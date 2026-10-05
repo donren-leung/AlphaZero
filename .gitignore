@@ -1,5 +1,13 @@
 artifacts
 
+*profile*
+notebook/
+input
+viztracer*
+
+*log*
+!*log*.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -166,9 +174,3 @@ cython_debug/
 .vscode/*
 output/*
 .ruff_cache/*
-
-*profile*
-*log*
-notebook/
-input
-viztracer*

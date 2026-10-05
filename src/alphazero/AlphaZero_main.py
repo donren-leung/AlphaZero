@@ -38,6 +38,7 @@ def self_play(
     MCTS_factory = MCTS_Factory(ROLLOUTS)
 
     game_worker_ps: list[BaseProcess] = []
+    eval_worker_ps: list[BaseProcess] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
@@ -55,6 +56,7 @@ def self_play(
         eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
+        eval_worker_ps.append(p)
 
     for i, results_queue in enumerate(results_queues):
         game_worker = GameWorker(game_type,
@@ -86,6 +88,12 @@ def self_play(
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
+
+    for _ in eval_worker_ps:
+        request_queue.put(None)
+
+    for eval_worker_p in eval_worker_ps:
+        eval_worker_p.join()
 
     metrics_stop_event.set()
     metrics_daemon_thread.join()
@@ -143,11 +151,9 @@ class AlphaZero:
             policy_targets = [policy for _, policy, _ in sample]
             value_targets = [value for _, _, value in sample]
 
-            state_tensor = torch.stack([state.to_tensor() for state in states]).to(dtype=torch.float32)
-
-            policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to(dtype=torch.float32)
-
-            value_targets_tensor = torch.tensor(value_targets, dtype=torch.float32).reshape(-1, 1).to(dtype=torch.float32)
+            state_tensor = torch.stack([state.to_tensor() for state in states]).to("cuda").to(dtype=torch.float32)
+            policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to("cuda").to(dtype=torch.float32)
+            value_targets_tensor = torch.tensor(value_targets).reshape(-1, 1).to("cuda").to(dtype=torch.float32)
 
             out_policy, out_value = self.model(state_tensor)
 
@@ -161,6 +167,7 @@ class AlphaZero:
 
     def learn(self):
         for iteration in range(self.args.iter):
+            self.model.to("cpu")
             memory = self.self_play(
                 self.args.game_type,
                 self.args.rollouts,
@@ -169,6 +176,7 @@ class AlphaZero:
                 self.args.games_per_worker,
             )
 
+            self.model.to("cuda")
             self.model.train()
             for epoch in trange(self.args.epochs):
                 self.train(memory)

@@ -53,14 +53,14 @@ class MCTS_Factory(object):
 
 @dataclass(slots=True, frozen=True)
 class MCTS_Result():
-    action_stats: list[tuple[float, float, float, int, int]]
+    action_stats: list[tuple[float, float, float, int, int, float]]
     best_action: int
 
     def __str__(self):
         return "\n".join(
             f"{pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
-            f" | ucb {ucb:.3f} | move {move}{" <<<" if move == self.best_action else ""}"
-            for pct_visits, avg_value, ucb, visits, move in self.action_stats
+            f" | ucb {ucb:.3f} | prior {prior:.2f} move {move}{" <<<" if move == self.best_action else ""}"
+            for pct_visits, avg_value, ucb, visits, move, prior in self.action_stats
         )
 
 class MCTS_Instance(object):
@@ -159,10 +159,11 @@ class MCTS_Instance(object):
         self._search()
         children_details = [(
                 child.visits / self.root.visits if self.rollouts else math.nan,
-                (child.value_sum / child.visits) if child.visits else math.nan,
+                (-child.value_sum / child.visits) if child.visits else math.nan,
                 self.root.get_ucb(child),
                 child.visits,
-                child.parent_action if child.parent_action is not None else -1)
+                child.parent_action if child.parent_action is not None else -1,
+                child.prior_prob)
             for child in self.root.children
         ]
         best_action = max(children_details, key=lambda x: x[0])[4]
