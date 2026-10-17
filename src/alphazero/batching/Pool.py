@@ -7,6 +7,7 @@ import time
 from threading import Thread
 
 import torch
+import numpy as np
 
 from alphazero.MCTS.MCTS_batch import simulate_
 from alphazero.models.model import ResNet
@@ -104,7 +105,7 @@ class GPU_AZ_Worker(object):
     def gpu_compute(self, batch: list[AZ_NodeRequest]) -> None:
         with torch.inference_mode():
             # Batch up the game state and action pairs into a tensor
-            x = torch.tensor([request.state for request in batch]).to(self.device).to(torch.float32)
+            x = torch.tensor(np.stack([request.state for request in batch])).to(self.device).to(torch.float32)
             # Call GPU
             policy_batch, value_batch = self.model(x)
             policy_batch = torch.softmax(policy_batch, dim=1)

@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from tqdm import trange
 
 from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
-from .batching.AZ_GameWorker import GameWorker, mpQueueGen
+from .batching.AZ_GameWorker import GameWorker, mpQueueGen, SparsePolicy
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
 from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase, CompactRepr
@@ -28,7 +28,7 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-    ) -> list[tuple[CompactRepr, NDArray[np.float32], int]]:
+    ) -> list[tuple[CompactRepr, SparsePolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
     print(f"Using GPU for node evaluation.")
@@ -79,7 +79,7 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[CompactRepr, NDArray[np.float32], int]] = []
+    memory: list[tuple[CompactRepr, SparsePolicy, int]] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()
@@ -137,20 +137,20 @@ class AlphaZero:
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, NDArray[np.float32], int]]:
+                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, SparsePolicy, int]]:
         self.model_args["state_dict"] = self.model.state_dict()
         return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
-    def train(self, memory: list[tuple[CompactRepr, NDArray[np.float32], int]]):
+    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparsePolicy, int]]):
         random.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
             states = [compact_repr.unpack() for compact_repr, _, _ in sample]
-            policy_targets = [policy for _, policy, _ in sample]
+            policy_targets = [policy.unpack(GAME_TYPE.action_size) for _, policy, _ in sample]
             value_targets = [value for _, _, value in sample]
 
-            state_tensor = torch.tensor(states).to("cuda").to(dtype=torch.float32)
+            state_tensor = torch.from_numpy(np.stack(states)).to("cuda").to(dtype=torch.float32)
             policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to("cuda").to(dtype=torch.float32)
             value_targets_tensor = torch.tensor(value_targets).reshape(-1, 1).to("cuda").to(dtype=torch.float32)
 
@@ -178,7 +178,7 @@ class AlphaZero:
             self.model.to("cuda")
             self.model.train()
             for epoch in trange(self.args.epochs):
-                self.train(memory)
+                self.train(self.args.game_type,memory)
 
             torch.save(
                 self.model.state_dict(),

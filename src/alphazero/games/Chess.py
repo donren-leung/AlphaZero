@@ -105,6 +105,10 @@ class ChessState(GameStateBase):
         return ChessState(self.state.copy())
 
 class ChessGame(GameBase[ChessState]):
+    action_size: ClassVar[int] = CHESS_ACTION_SIZE
+    row_count: ClassVar[int] = 8
+    col_count: ClassVar[int] = 8
+
     def __init__(self, state: ChessState | None=None) -> None:
         super().__init__(state)
 
@@ -120,6 +124,9 @@ class ChessGame(GameBase[ChessState]):
 
     def get_value_and_terminated(self, action: int):
         return self.state.get_value_and_terminated(action)
+
+    def encode_for_model(self) -> ModelInput:
+        return self.state.encode_for_model()
 
     def __repr__(self) -> str:
         return "Chess"

@@ -51,8 +51,13 @@ def main(args) -> None:
     model: ResNet | None = None
     if args.model is not None:
         if args.model_args is None:
-            raise ValueError("If --model is specified, --model-args must also be specified.")
-        model_args_path = args.model_args
+            # check for args.json in the same directory as the model file
+            model_args_path = args.model.parent / "args.json"
+            if not model_args_path.exists():
+                raise ValueError("If --model is specified, --model-args must also be specified.")
+        else:
+            model_args_path = args.model_args
+
         if not model_args_path.exists():
             raise FileNotFoundError(f"Model args file {model_args_path} does not exist.")
         with open(model_args_path, "r") as f:

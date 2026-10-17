@@ -9,12 +9,12 @@ from alphazero.games.ConnectFour import ConnectFourGame
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]
+game_types: dict[str, GameType] = {
+    "ttt": TicTacToeGame,
+    "c4": ConnectFourGame,
+}
 
 def parse_game_type(value: str) -> GameType:
-    game_types: dict[str, GameType] = {
-        "ttt": TicTacToeGame,
-        "c4": ConnectFourGame,
-    }
 
     try:
         return game_types[value]
@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
         "--game-type",
         type=parse_game_type,
         default=ConnectFourGame,
-        metavar="{TicTacToe,ConnectFour}",
+        metavar=f"{','.join(game_types.keys())}",
         help="Type of game to play (default: ConnectFour)",
     )
 

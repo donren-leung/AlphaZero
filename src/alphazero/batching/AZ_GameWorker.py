@@ -1,13 +1,14 @@
+from dataclasses import dataclass
 import logging
 import math
 import time
 
 from queue import Queue, Empty
 from threading import Thread, Lock, Condition
-from typing import Generic, TypeVar, Type
+from typing import Generic, Self, TypeVar, Type
 
 import numpy as np
-import numpy.typing as npt
+from numpy.typing import NDArray
 
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
@@ -224,7 +225,7 @@ class GameWorker(Generic[GameStateT], object):
             action_probs /= np.sum(action_probs, dtype=np.float32)
 
             game.history['states'].append(game.state.to_compact_repr(game.current_player))
-            game.history['action_probs'].append(action_probs)
+            game.history['action_probs'].append(SparsePolicy.from_dense(action_probs))
 
             temperature_probs = np.power(action_probs, 1.0 / self.MCTS_factory.temperature)
             temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
@@ -255,3 +256,24 @@ class GameWorker(Generic[GameStateT], object):
 
         with self.metrics_lock:
             self.active_games -= 1
+
+@dataclass(frozen=True, slots=True)
+class SparsePolicy:
+    actions: NDArray[np.uint16]
+    probs: NDArray[np.float32]
+
+    @classmethod
+    def from_dense(cls, policy: NDArray) -> Self:
+        actions = np.flatnonzero(policy)
+        assert policy.size <= 65536
+
+        return cls(
+            actions=actions.astype(np.uint16),
+            probs=policy[actions].astype(np.float32),
+        )
+
+    def unpack(self, action_size: int) -> NDArray[np.float32]:
+        policy = np.zeros(action_size, dtype=np.float32)
+        policy[self.actions] = self.probs
+        return policy
+    

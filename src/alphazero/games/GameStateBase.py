@@ -33,9 +33,9 @@ class GameStateBase(ABC):
         If so, return the reward -1 to 1 for the player who made the queried action"""
         ...
 
-    # @abstractmethod
-    # def encode_for_model(self, player: int) -> NDArray[np.uint8]:
-    #     ...
+    @abstractmethod
+    def encode_for_model(self, player: int) -> NDArray[np.uint8]:
+        ...
 
     # @abstractmethod
     # def neutral_state(self, player: int) -> Self:
@@ -66,6 +66,14 @@ class GameStateNumpyBase(GameStateBase):
     def to_compact_repr(self, player: int) -> CompactRepr:
         state = self.neutral_state(player)
         return CompactNumpyState(state.state)
+
+    def encode_for_model(self, player: int) -> ModelInput:
+        state = self.neutral_state(player)
+        return np.stack([
+            state.state == -1,
+            state.state == 0,
+            state.state == 1,
+        ]).astype(np.uint8, copy=False)
 
 @dataclass(frozen=True, slots=True)
 class CompactNumpyState:
