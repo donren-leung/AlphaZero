@@ -1,8 +1,9 @@
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, ClassVar, Type, final, Literal
+from collections import defaultdict
+from typing import Any, Generic, TypeVar, ClassVar, Type, final, Literal
 
-from .GameStateBase import GameStateBase, GameStateNumpyBase
+from .GameStateBase import ModelInput, GameStateBase, GameStateNumpyBase
 
 import numpy as np
 from numpy import int8, bool_
@@ -18,8 +19,8 @@ class GameBase(Generic[GameStateT], ABC):
     row_count: ClassVar[int]
     col_count: ClassVar[int]
 
-    __slots__ = ["state", "action_history",
-                 "state_history", "action_prob_history", "outcome",
+    __slots__ = ["state",
+                 "history",
                  "current_player"]
 
     def __init__(self, state: GameStateT | None = None, starting_player: int=1) -> None:
@@ -29,6 +30,7 @@ class GameBase(Generic[GameStateT], ABC):
             self.state = state
 
         self.current_player: int = starting_player
+        self.history: dict[str, list[Any]] = defaultdict(list)
 
     @classmethod
     @abstractmethod
@@ -62,6 +64,10 @@ class GameBase(Generic[GameStateT], ABC):
         self.current_player = self.get_opponent(self.current_player)
 
     @abstractmethod
+    def encode_for_model(self) -> ModelInput:
+        ...
+
+    @abstractmethod
     def __repr__(self) -> str:
         ...
 
@@ -69,28 +75,18 @@ class GameBase(Generic[GameStateT], ABC):
         return self.state.__str__()
 
 class GameBaseNumpy(Generic[GameStateNumpyT], GameBase[GameStateNumpyT]):
-    __slots__ = ["state", "action_history",
-                 "state_history", "action_prob_history", "outcome",
+    __slots__ = ["state",
+                 "history",
                  "current_player"]
 
     def __init__(self, state: GameStateNumpyT | None = None, starting_player: int=1) -> None:
-        if state is None:
-            self.state = self.get_initial_state()
-        else:
-            self.state = state
+       super().__init__(state, starting_player)
 
-        # For parallel games
-        self.action_history:        list[int] = []
-        self.state_history:         list[GameStateNumpyT] = []
-        self.action_prob_history:   list[NDArray[np.float32]] = []
-        self.outcome:               list[int] = []
+    def encode_for_model(self) -> ModelInput:
+        state = self.state.neutral_state(self.current_player)
+        return np.stack([
+            state.state == -1,
+            state.state == 0,
+            state.state == 1,
+        ]).astype(np.uint8, copy=False)
 
-        self.current_player: int = starting_player
-
-    def make_move(self, action: int) -> None:
-        self._make_move(action, self.current_player)
-        self.action_history.append(action)
-        self._switch_current_player()
-
-    def neutral_state(self) -> GameStateNumpyT:
-        return self.state.neutral_state(self.current_player)

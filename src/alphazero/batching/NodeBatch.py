@@ -37,7 +37,7 @@ class AZ_NodeRequest:
     thread_id: int
 
     curr_player: int
-    state: GameStateNumpyBase
+    state: npt.NDArray[np.uint8]
 
 @dataclass(slots=True, frozen=True)
 class AZ_NodeBatchResponse:

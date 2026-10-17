@@ -121,7 +121,7 @@ class GameWorker(Generic[GameStateT], object):
         # player
         first_player = game.current_player
         while True:
-            logging.debug(f"thread {thread_id} iteration {len(game.action_history)}: {game.action_history}")
+            logging.debug(f"thread {thread_id} iteration {len(game.history['actions'])}: {game.history['actions']}")
 
             # Game after last move is still going, create new MCTS instance.
             MCTS_instance = self.MCTS_factory.make_instance(game=game)
@@ -188,19 +188,20 @@ class GameWorker(Generic[GameStateT], object):
             ]
             best_action = max(children_details, key=lambda x: x[0])[1]
             game.make_move(best_action)
+            game.history['actions'].append(best_action)
             logging.debug(f"thread {thread_id} made move {best_action}")
             with self.metrics_lock:
                 self.total_moves += 1
 
             value, terminated = game.get_value_and_terminated(best_action)
             if terminated:
-                assert len(game.state_history) == len(game.action_prob_history)
+                assert len(game.history['states']) == len(game.history['action_probs'])
                 hist_player = first_player
                 last_player = game.get_opponent(game.current_player)
 
-                for _ in game.action_prob_history:
+                for _ in game.history['action_probs']:
                     outcome = value if hist_player == last_player else -value
-                    game.outcome.append(outcome)
+                    game.history['outcome'].append(outcome)
                     hist_player = game.get_opponent(hist_player)
 
                 break

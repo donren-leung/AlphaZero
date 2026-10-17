@@ -12,24 +12,23 @@ import numpy as np
 from numpy.typing import NDArray
 from tqdm import trange
 
-from alphazero.games.GameBase import GameBaseNumpy
-from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
-
 from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
-from .games.GameStateBase import GameStateNumpyBase
+from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase, CompactRepr
+from .MCTS.MCTS_AlphaZero import MCTS_Factory
 from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 def self_play(
-         game_type: type[GameBaseNumpy[GameStateNumpyBase]],
+         game_type: type[GameBase[GameStateBase]],
          ROLLOUTS: int,
          PROCESSES: int,
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-    ) -> list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]:
+    ) -> list[tuple[CompactRepr, NDArray[np.float32], int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
     print(f"Using GPU for node evaluation.")
@@ -39,7 +38,7 @@ def self_play(
 
     game_worker_ps: list[BaseProcess] = []
     eval_worker_ps: list[BaseProcess] = []
-    all_game_results: mpQueueGen[tuple[str, GameBaseNumpy]] = mpQueueGen(ctx)
+    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
     request_queue: mpQueueGen[list[AZ_NodeRequest] | None] = mpQueueGen(ctx)
@@ -80,11 +79,11 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[GameStateNumpyBase, NDArray[np.float32], int]] = []
+    memory: list[tuple[CompactRepr, NDArray[np.float32], int]] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()
-        memory.extend(zip(game.state_history, game.action_prob_history, game.outcome, strict=True))
+        memory.extend(zip(game.history['states'], game.history['action_probs'], game.history['outcome'], strict=True))
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
@@ -134,24 +133,24 @@ class AlphaZero:
         self.model_args["state_dict"] = self.model.state_dict()
 
     def self_play(self,
-                  GAME_TYPE: type[GameBaseNumpy[GameStateNumpyBase]],
+                  GAME_TYPE: type[GameBase[GameStateBase]],
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]:
+                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, NDArray[np.float32], int]]:
         self.model_args["state_dict"] = self.model.state_dict()
         return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
-    def train(self, memory: list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]):
+    def train(self, memory: list[tuple[CompactRepr, NDArray[np.float32], int]]):
         random.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
-            states = [state for state, _, _ in sample]
+            states = [compact_repr.unpack() for compact_repr, _, _ in sample]
             policy_targets = [policy for _, policy, _ in sample]
             value_targets = [value for _, _, value in sample]
 
-            state_tensor = torch.stack([state.to_tensor() for state in states]).to("cuda").to(dtype=torch.float32)
+            state_tensor = torch.tensor(states).to("cuda").to(dtype=torch.float32)
             policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to("cuda").to(dtype=torch.float32)
             value_targets_tensor = torch.tensor(value_targets).reshape(-1, 1).to("cuda").to(dtype=torch.float32)
 

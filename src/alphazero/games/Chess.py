@@ -1,14 +1,35 @@
-from typing import ClassVar
+from dataclasses import dataclass
+from typing import ClassVar, Self
 
 import chess
 import numpy as np
 from numpy.typing import NDArray
+import torch
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
-from .ChessUtils import encode_move, decode_action, CHESS_ACTION_SIZE
+from .ChessUtils import encode_move, decode_action, encode_chess, CHESS_ACTION_SIZE
 
 type State = chess.Board
+type ModelInput = NDArray[np.uint8]
+
+@dataclass(frozen=True, slots=True)
+class CompactChessState:
+    # FEN is the position up to 7 half-moves back
+    # Zip of the following:
+    # Moves: Oldest first. Populates a partial history of the game.
+    # Repetitions. Newest first. counts occurences of position at step t
+
+    fen: str
+    moves: tuple[str, ...]
+    repetition_flags: tuple[int, ...]
+
+    def unpack(self) -> ModelInput:
+        board = chess.Board(self.fen)
+        for uci in self.moves:
+            board.push_uci(uci)
+
+        return encode_chess(board, self.repetition_flags)
 
 class ChessState(GameStateBase):
     __slots__ = ["row_count", "col_count", "in_a_row"]
@@ -44,6 +65,38 @@ class ChessState(GameStateBase):
         # Checkmate. The player who just moved is the winner, so the current player is the loser.
         assert outcome.winner is not self.state.turn
         return 1, True
+
+    def encode_for_model(self, player: int=0) -> ModelInput:
+        return encode_chess(self.state)
+
+    def to_compact_repr(self, player: int=0) -> CompactChessState:
+        board = self.state.copy(stack=True)
+
+        moves: list[str] = []
+        repetition_flags: list[int] = []
+
+        for i in range(8):
+            # Number of previous occurrences, capped at 2
+            if board.is_repetition(3):
+                count = 2
+            elif board.is_repetition(2):
+                count = 1
+            else:
+                count = 0
+
+            repetition_flags.append(count)
+
+            if i == 7 or not board.move_stack:
+                break
+
+            move = board.pop()
+            moves.append(move.uci())
+
+        return CompactChessState(
+            fen=board.fen(),
+            moves=tuple(reversed(moves)),
+            repetition_flags=tuple(repetition_flags)
+        )
 
     def __str__(self) -> str:
         return str(self.state)

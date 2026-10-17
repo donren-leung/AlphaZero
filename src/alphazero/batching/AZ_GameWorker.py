@@ -11,11 +11,11 @@ import numpy.typing as npt
 
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
-from alphazero.games.GameBase import GameBaseNumpy, GameStateNumpyBase
+from alphazero.games.GameBase import GameBase, GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, mask_and_norm
 
-GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
-GameT = GameBaseNumpy[GameStateT]
+GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+GameT = GameBase[GameStateT]
 
 class GameWorker(Generic[GameStateT], object):
     """
@@ -27,8 +27,8 @@ class GameWorker(Generic[GameStateT], object):
     RECHECK_INTERVAL_S = 0.1
     WAIT_FRAC = 0.4
 
-    def __init__(self, game_type: type[GameBaseNumpy[GameStateT]], *,
-                 num_games: int, output_games: mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]],
+    def __init__(self, game_type: type[GameBase[GameStateT]], *,
+                 num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[list[AZ_NodeRequest] | None],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
@@ -45,7 +45,7 @@ class GameWorker(Generic[GameStateT], object):
         self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
         self.out_queue:     mpQueueGen[list[AZ_NodeRequest] | None]        = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]]   = output_games
+        self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[AZ_SimulationReturnType | None]  = []
@@ -158,13 +158,13 @@ class GameWorker(Generic[GameStateT], object):
                  self.received_results)
             )
 
-    def run_game(self, thread_id: int, game: GameBaseNumpy[GameStateT]) -> None:
+    def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
 
         # player
         first_player = game.current_player
         while True:
-            logging.debug(f"thread {thread_id} move {len(game.state_history)}")
+            logging.debug(f"thread {thread_id} move {len(game.history.get('states', []))}")
 
             # Game after last move is still going, create new MCTS instance.
             MCTS_instance = self.MCTS_factory.make_instance(game=game)
@@ -223,8 +223,8 @@ class GameWorker(Generic[GameStateT], object):
                 action_probs[child.parent_action] = child.visits
             action_probs /= np.sum(action_probs, dtype=np.float32)
 
-            game.state_history.append(game.state.neutral_state(game.current_player))
-            game.action_prob_history.append(action_probs)
+            game.history['states'].append(game.state.to_compact_repr(game.current_player))
+            game.history['action_probs'].append(action_probs)
 
             temperature_probs = np.power(action_probs, 1.0 / self.MCTS_factory.temperature)
             temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
@@ -238,13 +238,13 @@ class GameWorker(Generic[GameStateT], object):
 
             value, terminated = game.get_value_and_terminated(action)
             if terminated:
-                assert len(game.state_history) == len(game.action_prob_history)
+                assert len(game.history['states']) == len(game.history['action_probs'])
                 hist_player = first_player
                 last_player = game.get_opponent(game.current_player)
 
-                for _ in game.action_prob_history:
+                for _ in game.history['action_probs']:
                     outcome = value if hist_player == last_player else -value
-                    game.outcome.append(outcome)
+                    game.history['outcome'].append(outcome)
                     hist_player = game.get_opponent(hist_player)
 
                 break

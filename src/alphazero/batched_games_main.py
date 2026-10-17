@@ -156,10 +156,10 @@ def main(game_type: Type[GameBaseNumpy],
     metrics_stop_event.set()
     metrics_daemon_thread.join()
 
-    print(games[0].action_history)
+    print(games[0].history['actions'])
     print(games[0].state)
 
-    print(games[-1].action_history)
+    print(games[-1].history['actions'])
     print(games[-1].state)
 
 if __name__ == "__main__":

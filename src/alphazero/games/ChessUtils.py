@@ -1,8 +1,20 @@
+from typing import Sequence
 
 import chess
+import numpy as np
+from numpy.typing import NDArray
 
 CHESS_ENCODING_VERSION = 1
+CHESS_INPUT_VERSION = 1
 CHESS_ACTION_SIZE = 8 * 8 * 73
+CHESS_INPUT_CHANNELS = 118
+
+TIME_STEP_LAYERS = 14
+CHESS_PIECE_LAYERS = 6
+REPETITION_PLANE_START = CHESS_PIECE_LAYERS * 2
+TIME_STEPS = 8
+
+AUXILIARY_PLANE_START = TIME_STEP_LAYERS * TIME_STEPS
 
 # (file delta, rank delta) in white-facing coordinates, clockwise from north
 QUEEN_DIRECTIONS = (
@@ -105,3 +117,63 @@ def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
             f"Action {action} is not a canonical legal move: {move.uci()}"
         )
     return move
+
+def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> NDArray[np.uint8]:
+    """
+    Accepts optional repetition history.
+    repetitions[t] is the number of repetitions of pos t halfmoves ago.
+    """
+    # AlphaZero encoding
+    # P1 pieces (6)
+    # P2 pieces (6)
+    # Repetition 2, 3 (2); whole plane binary mask
+    # Repeat for T=8 halfmove history (8 * 14 = 112)
+
+    # P1 castling rights (2); whole plane binary mask
+    # P2 castling rights (2); whole plane binary mask
+    # Total move count (1); whole plane encoded
+    # No progress clock (1); whole plane encoded
+
+    is_white = board.turn
+
+    # Time step planes
+    features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
+    history = board.copy(stack=TIME_STEPS - 1)
+    for ply in range(TIME_STEPS):
+        for square, piece in history.piece_map().items():
+            oriented = square if is_white else chess.square_mirror(square)
+            side = 0 if piece.color == is_white else CHESS_PIECE_LAYERS
+            plane = ply * TIME_STEP_LAYERS + side + piece.piece_type - 1
+            features[plane, chess.square_rank(oriented),
+                     chess.square_file(oriented)] = 1
+
+        if repetitions is not None:
+            assert ply < len(repetitions), "Repetition history is shorter than the number of halfmoves"
+            r2 = repetitions[ply] >= 2
+            r3 = repetitions[ply] >= 3
+        else:
+            r2 = history.is_repetition(2)
+            r3 = history.is_repetition(3)
+
+        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START, :, :] = r2
+        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START + 1, :, :] = r3
+
+        if not history.move_stack:
+            break
+        history.pop()
+
+    # Auxiliary planes
+    for plane, color, kingside in (
+        (AUXILIARY_PLANE_START, is_white, True), (AUXILIARY_PLANE_START + 1, is_white, False),
+        (AUXILIARY_PLANE_START + 2, not is_white, True), (AUXILIARY_PLANE_START + 3, not is_white, False),
+    ):
+        has_right = (
+            board.has_kingside_castling_rights(color)
+            if kingside else board.has_queenside_castling_rights(color)
+        )
+        features[plane, :, :] = has_right
+
+    features[AUXILIARY_PLANE_START + 4, :, :] = board.ply()
+    features[AUXILIARY_PLANE_START + 5, :, :] = board.halfmove_clock
+
+    return features
