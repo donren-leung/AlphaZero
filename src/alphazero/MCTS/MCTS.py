@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from time import sleep
 
 from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import GameStateNumpyBase
 
 import numpy as np
 
@@ -61,7 +61,7 @@ class MCTS_Instance(object):
         assert player == -1 or player == 1
 
         state = game.state
-        assert issubclass(state.__class__, GameStateBase)
+        assert issubclass(state.__class__, GameStateNumpyBase)
 
         assert processes >= 1
 
@@ -165,7 +165,7 @@ class Node(object):
                 "visits",
                 "MCTS_factory"]
     def __init__(self, parent: Node | None, parent_action: int | None,
-                 state: GameStateBase, player: int,
+                 state: GameStateNumpyBase, player: int,
                  *, MCTS_factory: MCTS_Factory) -> None:
         assert (
             (parent is None and parent_action is None) or
@@ -312,7 +312,7 @@ class Node(object):
 # Returns a value, with respect to the node that called the simulation.
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
-def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int | None,
+def simulate_(curr_state: GameStateNumpyBase, curr_player: int, parent_action: int | None,
               *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
     # sleep(0.001)
     if parent_action is not None:

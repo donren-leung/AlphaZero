@@ -1,6 +1,6 @@
 from typing import ClassVar, Literal
 
-from .GameStateBase import GameStateBase
+from .GameStateBase import GameStateNumpyBase
 from .GameBase import GameBase
 
 import numpy as np
@@ -8,18 +8,18 @@ from numpy.typing import NDArray
 
 type State = NDArray[np.int8]
 
-class TicTacToeState(GameStateBase):
+class TicTacToeState(GameStateNumpyBase):
     __slots__ = ["row_count", "col_count"]
     def __init__(self, state: State):
         self.state = state
         self.row_count = state.shape[0]
         self.col_count = state.shape[1]
 
-    def get_legal_actions(self, player: int) -> NDArray[np.bool_]:
+    def get_legal_actions(self) -> NDArray[np.bool_]:
         return (self.state.reshape(-1) == 0).astype(np.bool_)
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'TicTacToeState':
-        assert self.get_legal_actions(player)[action], f"action {action} not valid"
+        assert self.get_legal_actions()[action], f"action {action} not valid"
         row = action // self.col_count
         col = action % self.col_count
 
@@ -50,7 +50,7 @@ class TicTacToeState(GameStateBase):
 
         if check_win(self, action):
             return 1, True
-        elif not np.any(self.get_legal_actions(player)):
+        elif not np.any(self.get_legal_actions()):
             return 0, True
         return 0, False
 
@@ -73,7 +73,7 @@ class TicTacToeGame(GameBase[TicTacToeState]):
         return TicTacToeState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        return self.state.get_legal_actions(self.current_player)
+        return self.state.get_legal_actions()
 
     def _make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)

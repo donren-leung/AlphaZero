@@ -11,10 +11,10 @@ import numpy.typing as npt
 
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
-from alphazero.games.GameBase import GameBase, GameStateBase
+from alphazero.games.GameBase import GameBase, GameStateNumpyBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, mask_and_norm
 
-GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
 GameT = GameBase[GameStateT]
 
 class GameWorker(Generic[GameStateT], object):

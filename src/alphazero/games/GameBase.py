@@ -2,13 +2,13 @@
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar, ClassVar, Type, final, Literal
 
-from .GameStateBase import GameStateBase
+from .GameStateBase import GameStateNumpyBase
 
 import numpy as np
 from numpy import int8, bool_
 from numpy.typing import NDArray
 
-GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
 
 class GameBase(Generic[GameStateT], ABC):
     state_cls: Type[GameStateT]

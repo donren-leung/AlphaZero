@@ -11,7 +11,7 @@ import numpy as np
 
 from alphazero.batching.NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
 from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import GameStateNumpyBase
 
 # from viztracer import log_sparse
 
@@ -72,7 +72,7 @@ class MCTS_Instance(object):
         assert player == -1 or player == 1
 
         state = game.state
-        assert issubclass(state.__class__, GameStateBase)
+        assert issubclass(state.__class__, GameStateNumpyBase)
 
         assert processes >= 1
 
@@ -165,7 +165,7 @@ class Node(object):
                  "value_sum",
                  "visits"]
     def __init__(self, parent: Node | None, parent_action: int | None,
-                 state: GameStateBase, player: int) -> None:
+                 state: GameStateNumpyBase, player: int) -> None:
         assert (
             (parent is None and parent_action is None) or
             (parent is not None and parent_action is not None)
@@ -284,7 +284,7 @@ class Node(object):
 # Returns a value, with respect to the node that called the simulation.
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
-def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
+def simulate_(curr_state: GameStateNumpyBase, curr_player: int, parent_action: int,
               *, target_sims: int, debug: int=0) -> SimulationReturnType:
     # Find out if the game is already over
     value, terminated = curr_state.get_value_and_terminated(parent_action)

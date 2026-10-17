@@ -11,7 +11,7 @@ import torch
 
 from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import GameStateNumpyBase
 
 # from viztracer import log_sparse
 
@@ -74,7 +74,7 @@ class MCTS_Instance(object):
         assert player == -1 or player == 1
 
         state = game.state
-        assert isinstance(state, GameStateBase)
+        assert isinstance(state, GameStateNumpyBase)
 
         self.model = kwargs.get('model', None)
 
@@ -194,7 +194,7 @@ class Node(object):
                  parent: Node | None,
                  parent_action: int | None,
                  prior_prob: float,
-                 state: GameStateBase | None,
+                 state: GameStateNumpyBase | None,
                  player: int) -> None:
         if parent is None:
             assert parent_action is None
@@ -272,7 +272,7 @@ class Node(object):
             )
             self.children.append(child)
 
-    def get_next_state(self, action_idx: int) -> GameStateBase:
+    def get_next_state(self, action_idx: int) -> GameStateNumpyBase:
         assert self.state is not None, "Node state must be set before getting next state."
         return self.state.get_next_state(action_idx, self.player)
 

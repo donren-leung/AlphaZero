@@ -18,7 +18,7 @@ from .MCTS.MCTS_batch import MCTS_Factory
 from .batching.NodeBatch import NodeBatchRequest, NodeBatchResponse
 from .batching.GameWorker import GameWorker, mpQueueGen
 from .batching.Pool import PoolFactory, CPU_RandomRollout_Worker
-from .games.GameStateBase import GameStateBase
+from .games.GameStateBase import GameStateNumpyBase
 from .utils import metrics_daemon_CPU, ThreadSafeCounter
 
 GameType = type[TicTacToeGame] | type[ConnectFourGame]

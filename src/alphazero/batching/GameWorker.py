@@ -10,10 +10,10 @@ from typing import Generic, TypeVar, Type
 
 from .Pool import mpQueueGen
 from .NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
-from alphazero.games.GameBase import GameBase, GameStateBase
+from alphazero.games.GameBase import GameBase, GameStateNumpyBase
 from alphazero.MCTS.MCTS_batch import MCTS_Factory, Node
 
-GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
 GameT = GameBase[GameStateT]
 
 class GameWorker(Generic[GameStateT], object):

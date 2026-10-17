@@ -18,18 +18,18 @@ from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
 from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
-from .games.GameStateBase import GameStateBase
+from .games.GameStateBase import GameStateNumpyBase
 from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 def self_play(
-         game_type: type[GameBase[GameStateBase]],
+         game_type: type[GameBase[GameStateNumpyBase]],
          ROLLOUTS: int,
          PROCESSES: int,
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-    ) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+    ) -> list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
     print(f"Using GPU for node evaluation.")
@@ -80,7 +80,7 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[GameStateBase, NDArray[np.float32], int]] = []
+    memory: list[tuple[GameStateNumpyBase, NDArray[np.float32], int]] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()
@@ -134,15 +134,15 @@ class AlphaZero:
         self.model_args["state_dict"] = self.model.state_dict()
 
     def self_play(self,
-                  GAME_TYPE: type[GameBase[GameStateBase]],
+                  GAME_TYPE: type[GameBase[GameStateNumpyBase]],
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+                  GAME_WORKER_GAMES: int) -> list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]:
         self.model_args["state_dict"] = self.model.state_dict()
         return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
-    def train(self, memory: list[tuple[GameStateBase, NDArray[np.float32], int]]):
+    def train(self, memory: list[tuple[GameStateNumpyBase, NDArray[np.float32], int]]):
         random.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
