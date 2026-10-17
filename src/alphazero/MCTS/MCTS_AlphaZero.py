@@ -10,7 +10,7 @@ import numpy.typing as npt
 import torch
 
 from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
-from alphazero.games.GameBase import GameBase
+from alphazero.games.GameBase import GameBaseNumpy
 from alphazero.games.GameStateBase import GameStateNumpyBase
 
 # from viztracer import log_sparse
@@ -66,8 +66,8 @@ class MCTS_Result():
 class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
     def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory, **kwargs) -> None:
-        game: GameBase = kwargs['game']
-        assert isinstance(game, GameBase)
+        game: GameBaseNumpy = kwargs['game']
+        assert isinstance(game, GameBaseNumpy)
         self.game = game
 
         player = game.current_player
@@ -251,7 +251,7 @@ class Node(object):
         assert self.state is not None, "Node state must be set before expanding."
 
         curr_state = self.state
-        valid_actions = curr_state.get_legal_actions(self.player)
+        valid_actions = curr_state.get_legal_actions()
         # assert valid actions and policy are the same length
         assert len(valid_actions) == len(policy), f"valid_actions and policy must be the same length, got {len(valid_actions)} and {len(policy)}."
         # assert policy is a valid probability distribution

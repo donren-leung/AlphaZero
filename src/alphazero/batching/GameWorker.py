@@ -10,11 +10,11 @@ from typing import Generic, TypeVar, Type
 
 from .Pool import mpQueueGen
 from .NodeBatch import NodeBatchRequest, NodeBatchResponse, SimulationReturnType
-from alphazero.games.GameBase import GameBase, GameStateNumpyBase
+from alphazero.games.GameBase import GameBaseNumpy, GameStateNumpyBase
 from alphazero.MCTS.MCTS_batch import MCTS_Factory, Node
 
 GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
-GameT = GameBase[GameStateT]
+GameT = GameBaseNumpy[GameStateT]
 
 class GameWorker(Generic[GameStateT], object):
     """
@@ -23,8 +23,8 @@ class GameWorker(Generic[GameStateT], object):
     """
     metrics_interval_s = 0.5
 
-    def __init__(self, game_type: type[GameBase[GameStateT]], *,
-                 num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
+    def __init__(self, game_type: type[GameBaseNumpy[GameStateT]], *,
+                 num_games: int, output_games: mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]],
                  in_queue: mpQueueGen[NodeBatchResponse],
                  out_queue: mpQueueGen[NodeBatchRequest],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
@@ -41,7 +41,7 @@ class GameWorker(Generic[GameStateT], object):
         self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
         self.out_queue:     mpQueueGen[NodeBatchRequest]                   = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
+        self.output_games:  mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[NodeBatchResponse | None]  = []

@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 from tqdm import trange
 
-from alphazero.games.GameBase import GameBase
+from alphazero.games.GameBase import GameBaseNumpy
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
 
 from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
@@ -23,7 +23,7 @@ from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 def self_play(
-         game_type: type[GameBase[GameStateNumpyBase]],
+         game_type: type[GameBaseNumpy[GameStateNumpyBase]],
          ROLLOUTS: int,
          PROCESSES: int,
          TARGET_GAME_WORKERS: int,
@@ -39,7 +39,7 @@ def self_play(
 
     game_worker_ps: list[BaseProcess] = []
     eval_worker_ps: list[BaseProcess] = []
-    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
+    all_game_results: mpQueueGen[tuple[str, GameBaseNumpy]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
     request_queue: mpQueueGen[list[AZ_NodeRequest] | None] = mpQueueGen(ctx)
@@ -134,7 +134,7 @@ class AlphaZero:
         self.model_args["state_dict"] = self.model.state_dict()
 
     def self_play(self,
-                  GAME_TYPE: type[GameBase[GameStateNumpyBase]],
+                  GAME_TYPE: type[GameBaseNumpy[GameStateNumpyBase]],
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,

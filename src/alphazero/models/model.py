@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from alphazero.games.GameBase import GameBase
+from alphazero.games.GameBase import GameBaseNumpy
 
 class ResNet(nn.Module):
     def __init__(self,

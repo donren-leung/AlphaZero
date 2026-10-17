@@ -9,7 +9,7 @@ import torch
 
 from .games.TicTacToe import TicTacToeGame
 from .games.ConnectFour import ConnectFourGame
-from .games.GameBase import GameBase
+from .games.GameBase import GameBaseNumpy
 from .MCTS.MCTS_multichild import MCTS_Factory
 from .MCTS.MCTS_AlphaZero import MCTS_Factory as MCTS_Factory_AZ
 from .models.model import ResNet
@@ -38,7 +38,7 @@ def human_gamelogic(move_legalities, curr_player) -> int:
         return action
 
 def main(args) -> None:
-    game: GameBase
+    game: GameBaseNumpy
     match args.game:
         case "tictac":
             game = TicTacToeGame()

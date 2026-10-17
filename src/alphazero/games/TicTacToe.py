@@ -1,7 +1,7 @@
 from typing import ClassVar, Literal
 
 from .GameStateBase import GameStateNumpyBase
-from .GameBase import GameBase
+from .GameBase import GameBaseNumpy
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,7 +60,7 @@ class TicTacToeState(GameStateNumpyBase):
     def __copy__(self) -> 'TicTacToeState':
         return TicTacToeState(np.copy(self.state))
 
-class TicTacToeGame(GameBase[TicTacToeState]):
+class TicTacToeGame(GameBaseNumpy[TicTacToeState]):
     row_count: ClassVar[int] = 3
     col_count: ClassVar[int] = 3
     action_size: ClassVar[int] = row_count * col_count

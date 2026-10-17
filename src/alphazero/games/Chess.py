@@ -4,8 +4,9 @@ import chess
 import numpy as np
 from numpy.typing import NDArray
 
-from .GameStateBase import GameStateBase, GameStateNumpyBase
+from .GameStateBase import GameStateBase
 from .GameBase import GameBase
+from .ChessUtils import encode_move, decode_action, CHESS_ACTION_SIZE
 
 type State = chess.Board
 
@@ -17,92 +18,58 @@ class ChessState(GameStateBase):
         self.col_count = 8
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        self.state.legal_moves
+        player = 1 if self.state.turn == chess.WHITE else -1
+        legal_actions = np.zeros(CHESS_ACTION_SIZE, dtype=np.bool_)
+        for move in self.state.legal_moves:
+            action = encode_move(self.state, move, player)
+            legal_actions[action] = True
+        return legal_actions
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ChessState':
-        row = np.max(np.where(self.state[:, action] == 0))
-
         if copy:
-            new_state = np.copy(self.state)
-            new_state[row, action] = player
-            return ConnectFourState(new_state)
+            new_state = self.state.copy()
         else:
-            self.state[row, action] = player
-            return self
+            new_state = self.state
 
-    def get_value_and_terminated(self, action: int):
-        player: int
-        # Checks if a move that's just been made results in a win for that player
-        def check_win(self, action: int) -> bool:
-            nonlocal player
+        move = decode_action(new_state, action, player)
+        new_state.push(move)
+        return ChessState(new_state)
 
-            non_zero_indices = np.where(self.state[:, action] != 0)[0]
-            assert non_zero_indices.size > 0, f"no pieces in column/{action=}"
-
-            row = np.min(np.where(self.state[:, action] != 0))
-            column = action
-            player = self.state[row][column]
-
-            def count(offset_row, offset_column):
-                for i in range(1, self.in_a_row):
-                    r = row + offset_row * i
-                    c = action + offset_column * i
-                    if (
-                        r < 0
-                        or r >= self.row_count
-                        or c < 0
-                        or c >= self.col_count
-                        or self.state[r][c] != player
-                    ):
-                        return i - 1
-                return self.in_a_row - 1
-
-            return (
-                count(1, 0) >= self.in_a_row - 1 # vertical
-                or (count(0, 1) + count(0, -1)) >= self.in_a_row - 1 # horizontal
-                or (count(1, 1) + count(-1, -1)) >= self.in_a_row - 1 # top left diagonal
-                or (count(1, -1) + count(-1, 1)) >= self.in_a_row - 1 # top right diagonal
-            )
-
-        if check_win(self, action):
-            return 1, True
-        elif not np.any(self.get_legal_actions(player)):
+    def get_value_and_terminated(self, action: int=0):
+        outcome = self.state.outcome(claim_draw=True)
+        if outcome is None:
+            return 0, False
+        if outcome.winner is None:
             return 0, True
-        return 0, False
+        # Checkmate. The player who just moved is the winner, so the current player is the loser.
+        assert outcome.winner is not self.state.turn
+        return 1, True
 
     def __str__(self) -> str:
         return str(self.state)
 
-    def __copy__(self) -> 'ConnectFourState':
-        return ConnectFourState(np.copy(self.state))
+    def __copy__(self) -> 'ChessState':
+        return ChessState(self.state.copy())
 
-class ConnectFourGame(GameBase[ConnectFourState]):
-    row_count: ClassVar[int] = 6
-    col_count: ClassVar[int] = 7
-    action_size: ClassVar[int] = col_count
-    in_a_row: ClassVar[int] = 4
-
-    def __init__(self, state: ConnectFourState | None=None) -> None:
+class ChessGame(GameBase[ChessState]):
+    def __init__(self, state: ChessState | None=None) -> None:
         super().__init__(state)
 
     @classmethod
-    def get_initial_state(cls) -> ConnectFourState:
-        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
+    def get_initial_state(cls) -> ChessState:
+        return ChessState(chess.Board())
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        return self.state.get_legal_actions(self.current_player)
+        return self.state.get_legal_actions()
 
     def _make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)
-
-    # def check_win(self, action: int) -> bool:
-    #     return self.state.check_win(action)
 
     def get_value_and_terminated(self, action: int):
         return self.state.get_value_and_terminated(action)
 
     def __repr__(self) -> str:
-        return "ConnectFour"
+        return "Chess"
 
     def __str__(self) -> str:
         return self.state.__str__()

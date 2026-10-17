@@ -10,7 +10,7 @@ from typing import Type
 import numpy as np
 from numpy.typing import NDArray
 
-from .games.GameBase import GameBase
+from .games.GameBase import GameBaseNumpy
 from .games.TicTacToe import TicTacToeGame
 from .games.ConnectFour import ConnectFourGame
 from .MCTS.MCTS_batch import MCTS_Factory
@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def main(game_type: Type[GameBase],
+def main(game_type: Type[GameBaseNumpy],
          ROLLOUTS: int,
          MULTI_SIMS: int,
          PROCESSES: int,
@@ -106,7 +106,7 @@ def main(game_type: Type[GameBase],
     target_eval_workers = MCTS_factory.processes
 
     game_worker_ps: list[BaseProcess] = []
-    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
+    all_game_results: mpQueueGen[tuple[str, GameBaseNumpy]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
     request_queue: mpQueueGen[NodeBatchRequest] = mpQueueGen(ctx)
@@ -144,7 +144,7 @@ def main(game_type: Type[GameBase],
     metrics_daemon_thread = Thread(target=metrics_daemon_CPU, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    games: list[GameBase] = []
+    games: list[GameBaseNumpy] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()

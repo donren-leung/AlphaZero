@@ -11,11 +11,11 @@ import numpy.typing as npt
 
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
-from alphazero.games.GameBase import GameBase, GameStateNumpyBase
+from alphazero.games.GameBase import GameBaseNumpy, GameStateNumpyBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, mask_and_norm
 
 GameStateT = TypeVar('GameStateT', bound='GameStateNumpyBase')
-GameT = GameBase[GameStateT]
+GameT = GameBaseNumpy[GameStateT]
 
 class GameWorker(Generic[GameStateT], object):
     """
@@ -27,8 +27,8 @@ class GameWorker(Generic[GameStateT], object):
     RECHECK_INTERVAL_S = 0.1
     WAIT_FRAC = 0.4
 
-    def __init__(self, game_type: type[GameBase[GameStateT]], *,
-                 num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
+    def __init__(self, game_type: type[GameBaseNumpy[GameStateT]], *,
+                 num_games: int, output_games: mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[list[AZ_NodeRequest] | None],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
@@ -45,7 +45,7 @@ class GameWorker(Generic[GameStateT], object):
         self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
 
         self.out_queue:     mpQueueGen[list[AZ_NodeRequest] | None]        = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
+        self.output_games:  mpQueueGen[tuple[str, GameBaseNumpy[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[AZ_SimulationReturnType | None]  = []
@@ -158,7 +158,7 @@ class GameWorker(Generic[GameStateT], object):
                  self.received_results)
             )
 
-    def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
+    def run_game(self, thread_id: int, game: GameBaseNumpy[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
 
         # player
@@ -195,7 +195,7 @@ class GameWorker(Generic[GameStateT], object):
                     if node is MCTS_instance.root:
                         # Introduce Dirichlet noise to root node for exploration
                         assert node.state is not None
-                        legal_actions = node.state.get_legal_actions(node.player)
+                        legal_actions = node.state.get_legal_actions()
                         y_policy = mask_and_norm(legal_actions, y_policy)
 
                         legal_idxs = np.flatnonzero(legal_actions)
