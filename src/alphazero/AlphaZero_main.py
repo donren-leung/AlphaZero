@@ -194,10 +194,11 @@ if __name__ == "__main__":
     args = parse_args()
 
     model_args = {
+        "game_input_channels": args.game_type.input_channels,
         "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
         "game_action_size": args.game_type.action_size,
-        "num_resBlocks": 6,
-        "num_channels": 64,
+        "num_resBlocks": 9,
+        "num_channels": 256,
         "head_hidden_size": 16,
         "batch_size": args.batch_size,
         "state_dict": None,

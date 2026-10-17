@@ -8,7 +8,7 @@ import torch
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
-from .ChessUtils import encode_move, decode_action, encode_chess, CHESS_ACTION_SIZE
+from .ChessUtils import encode_move, decode_action, encode_chess, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
 
 type State = chess.Board
 type ModelInput = NDArray[np.uint8]
@@ -106,6 +106,7 @@ class ChessState(GameStateBase):
 
 class ChessGame(GameBase[ChessState]):
     action_size: ClassVar[int] = CHESS_ACTION_SIZE
+    input_channels: ClassVar[int] = CHESS_INPUT_CHANNELS
     row_count: ClassVar[int] = 8
     col_count: ClassVar[int] = 8
 

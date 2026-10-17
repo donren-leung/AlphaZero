@@ -9,9 +9,9 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
-from alphazero.games.GameBase import GameBaseNumpy
-from alphazero.games.GameStateBase import GameStateNumpyBase
+from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_SimulationReturnType
+from alphazero.games.GameBase import GameBase
+from alphazero.games.GameStateBase import GameStateBase
 
 # from viztracer import log_sparse
 
@@ -66,15 +66,15 @@ class MCTS_Result():
 class MCTS_Instance(object):
     # Create a new MCTS from current state (player +1 us/-1 them)
     def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory, **kwargs) -> None:
-        game: GameBaseNumpy = kwargs['game']
-        assert isinstance(game, GameBaseNumpy)
+        game: GameBase = kwargs['game']
+        assert isinstance(game, GameBase)
         self.game = game
 
         player = game.current_player
         assert player == -1 or player == 1
 
         state = game.state
-        assert isinstance(state, GameStateNumpyBase)
+        assert isinstance(state, GameStateBase)
 
         self.model = kwargs.get('model', None)
 
@@ -200,7 +200,7 @@ class Node(object):
                  parent: Node | None,
                  parent_action: int | None,
                  prior_prob: float,
-                 state: GameStateNumpyBase | None,
+                 state: GameStateBase | None,
                  player: int) -> None:
         if parent is None:
             assert parent_action is None
@@ -278,7 +278,7 @@ class Node(object):
             )
             self.children.append(child)
 
-    def get_next_state(self, action_idx: int) -> GameStateNumpyBase:
+    def get_next_state(self, action_idx: int) -> GameStateBase:
         assert self.state is not None, "Node state must be set before getting next state."
         return self.state.get_next_state(action_idx, self.player)
 

@@ -15,6 +15,7 @@ GameStateNumpyT = TypeVar('GameStateNumpyT', bound='GameStateNumpyBase')
 class GameBase(Generic[GameStateT], ABC):
     state_cls: Type[GameStateT]
     action_size: ClassVar[int]
+    input_channels: ClassVar[int]
 
     row_count: ClassVar[int]
     col_count: ClassVar[int]
@@ -78,6 +79,8 @@ class GameBaseNumpy(Generic[GameStateNumpyT], GameBase[GameStateNumpyT]):
     __slots__ = ["state",
                  "history",
                  "current_player"]
+
+    input_channels: ClassVar[int] = 3
 
     def __init__(self, state: GameStateNumpyT | None = None, starting_player: int=1) -> None:
        super().__init__(state, starting_player)
