@@ -199,7 +199,7 @@ if __name__ == "__main__":
         "game_action_size": args.game_type.action_size,
         "num_resBlocks": 9,
         "num_channels": 256,
-        "head_hidden_size": 16,
+        "head_hidden_size": 64,
         "batch_size": args.batch_size,
         "state_dict": None,
     }

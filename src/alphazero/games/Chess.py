@@ -57,6 +57,9 @@ class ChessState(GameStateBase):
         return ChessState(new_state)
 
     def get_value_and_terminated(self, action: int=0):
+        if self.state.ply() >= 512:
+            # Hard cap on 512 half-moves.
+            return 0, True
         outcome = self.state.outcome(claim_draw=True)
         if outcome is None:
             return 0, False
