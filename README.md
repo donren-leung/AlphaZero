@@ -1,13 +1,15 @@
 # "Mastering" the game of TicTacToe, Connect Four and Chess with AlphaZero
 
-This project is a high-performance implementation of the AlphaZero algorithm, designed to master two-player, perfect-information games including TicTacToe, Connect Four, and Chess.
+A high-performance implementation of AlphaZero, a reinforcement learning algorithm designed to master two-player, perfect-information games including TicTacToe, Connect Four, and Chess.
 
-Based off of Robert Förster's course [AlphaZero from Scratch - Machine Learning Tutorial](https://www.youtube.com/watch?v=wuSQpLinRB4), I first recreated his tutorial of applying a NN to estimate values and priors in a MCTS (Monte-Carlo Tree Search). AlphaZero is essentially a feedback loop involving self-playing. The algorithm iterates and improves its own model output based on a set of completed games: the result of the MCTS performed at each position (policy) and the final result (value) from the perspective of the player-to-move.
+AlphaZero iterates and improves its own model output based on a set of completed self-play games:
+- the result of the MCTS performed at each position (policy) and
+- the final result (value) from the perspective of the player-to-move.
 
-The core challenge of AZ is that many game trajectories are required to be generated. To achieve high GPU utilisation and throughput, I added multi-process game workers that are each in charge of potentially hundreds of threads.
+An extension of Robert Förster's course [AlphaZero from Scratch - Machine Learning Tutorial](https://www.youtube.com/watch?v=wuSQpLinRB4)
 
 ## High-Throughput Pipeline
-Each worker manages a game and the MCTS of the current position. The workers send batched requests to eval workers, which in turn batch up requests to the GPU. On the other side, a similar process of unbatching and dispatching responses to the destination worker occurs.
+The core challenge of AlphaZero is that many game trajectories are required to be generated. To achieve high throughput, multi-processed workers serve and fully saturate the GPU with batches of requests.
 
 ```
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###################
@@ -16,14 +18,17 @@ thread/game ──► worker queue ────► group & dispatch ─|─► e
 thread/game ◄── worker inbox ◄──|─ group & dispatch ◄─── eval worker ◄── unbatch ◄──|──  policy & value
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###################
 ```
+Each game worker has potentially hundreds of threads. Each thread manages a game and the MCTS of the current position. The workers send batched requests to eval workers, which in turn batch up requests to the GPU.
+
+On the other side, a similar process of unbatching and dispatching responses to the destination worker occurs.
 
 ## Results
-A metrics thread in each worker reports the performance of each worker as well as the total performance of the whole system. On Connect Four, this implementation achieves ~25k nodes/s on a 18C/36T server CPU and RTX 3070 with 32 game workers and 4 eval workers.
+A metric thread in each worker reports back performance to the controller. On Connect Four, this implementation achieves ~25k nodes/s with 32 game workers and 4 eval workers on a 18C/36T Xeon 2697v4 and RTX 3070.
 Small and medium games (TicTacToe and Connect Four respectively) are an ideal test bed for prototyping and validating correctness. An effective neural net can be trained in a matter of minutes or hours.
 
-I devised a protocol to allow for any two player perfect-information game to interface with my MCTS and AZ self-play framework. While the prior two games have a simple implementation, the protocol allowed me to avoid reinventing the wheel by wrapping an external chess library, `python-chess`.
+I devised a protocol to allow for any two player perfect-information game to interface with my MCTS and AZ self-play framework, allowing me to wrap an external chess library, `python-chess`.
 
-On chess, the same computer achieved ~2k nodes/s. While part of the slowdown is due to calling a deeper, wider CNN, chess exposes the various inefficiencies. Some ideas are reusing tree, only computing deep MCTS for a fraction of positions, lazy instantiation of nodes, avoiding copying of the `Board` object. I have experimented and achieved ~8k nodes/s.
+On chess, the same computer achieved ~2k nodes/s, exposing inefficient overheads beyond using a deeper and wider CNN. Some ideas are reusing tree statistics for subsequent MCTS, only computing deep MCTS for a fraction of positions, lazy instantiation of nodes, avoiding copying of the `Board` object. I have experimented and achieved ~8k nodes/s. Code coming soon.
 
 # Future Directions
 Future directions include experimenting with mixed precision inference and training. Transformer architecture. A challenge to train AZ-style model to Grandmaster strength in one day.
