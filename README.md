@@ -1,4 +1,4 @@
-# "Mastering" the game of TicTacToe, Connect Four and Chess with AlphaZero
+# "Mastering" the games of TicTacToe, Connect Four, and Chess with AlphaZero
 
 A high-performance implementation of AlphaZero [(Silver et al. 2017)](https://arxiv.org/abs/1712.01815), a reinforcement learning algorithm designed to master two-player, perfect-information games including TicTacToe, Connect Four, and Chess.
 
