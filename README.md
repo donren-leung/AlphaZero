@@ -35,8 +35,8 @@ These experiments have improved the throughput to ~8k nodes/s, tapering off as g
 
 ![MCTS node evaluation metrics over iteration 001](./assets/iter001.chess_r200_p1_gw35_gpw1024_b64_e4_resume_chess_r40_p4_gw32_gpw256_b128_e4_model_000.png)
 
-# Future Directions
-## Faster Training and Inference
+## Future Directions
+### Faster Training and Inference
 While this framework can fully saturate a GPU, promising future directions can reduce computation in model invocations as well as reducing the information needed (sample efficiency). The ultimate challenge is to train a AZ-style model to Grandmaster-strength in 24 hours.
 
 Areas of interest include:
@@ -44,14 +44,14 @@ Areas of interest include:
 - Maintaining a buffer replay, reanalysis, continual model iteration.
 - Using a transformer architecture to better model long-range piece interactions.
 
-## Making Chess Engines Explainable
+### Making Chess Engines Explainable
 Engines have been outperforming humans for almost 30 years, yet to this day their evaluations are notorious for being difficult to interpret and learn from, especially for beginner and intermediate players. It is one thing to identify the best moves, but another to explain underlying strategic plans and tactical ideas at both short and long time scales.
 
 LLMs present a useful instrument to bridge this gap, but many existing approaches integrate them poorly (in my opinion). They either make the LLM itself play chess, or they call an engine and give branches of lines as text to LLM.
 
 Recently, the idea of integrating chess board representations directly into language models has emerged [(Bhaskar et al. 2026)](https://arxiv.org/html/2610.03695v1). I believe text tokens attending to rich board features is key to grounded and insightful explanations. This is a promising and fascinating area of research that would not only contribute to chess pedagogy but also broadly to Explainable AI research.
 
-# Tangent: A Critical View of AlphaZero
+## Tangent: A Critical View of AlphaZero
 On a slight tangent, when I first heard about AlphaZero, I thought it was so profound to imagine a computer fighting with, and learning from, itself in an intellectual duel. But many years later when I read the papers and compared AlphaGo (the version that beat 9-dan pro Lee Sedol in the famous 2016 match) to AlphaGo Zero, I realised it was brutally simpler yet more elegant than I had thought. AlphaGo and traditional MCTS both generate actual rollouts to the end of the game to estimate the value of a position. AlphaGo Zero removes rollouts entirely. To anthropomorphise it, it says "You know what? I've searched deep enough. Rollouts are just as noisy; I'll just guess the outcome from here (conditioned on myself playing in self-play mode with all the associated exploration tweaks)," and in lieu uses its value output -- one of the two targets improved over self-play iterations -- at that leaf position. This is a kind of boot-strapping; to have an accurate estimate of the present requires a good estimate of the future, which in turn requires a good estimate of the future's future. This inductive chain only resolves because at some point the game does definitively end with a known result.
 
 It might be eye-opening for you to reframe AlphaZero as "amortized planning" just as Deepmind did in [(Ruoss et al. 2024)](https://arxiv.org/abs/2402.04494). So much for seeming like a civilised or human-like player, evaluating only thousands of moves per position, compared to the millions of a traditional chess engine like Stockfish. Because a trained AlphaZero-type model will have done the extensive search at train-time over a vast and diverse range of positions. In principle, it will have learnt all the relevant features of a chess board to more-than-adequately provide a value estimate for any given position. However, there is nothing inherent about value estimation that requires self-play RL. A substitute for this would be to look at human games and consult each position's winning statistics. Even better, consult with a chess engine so powerful that we consider it as an 'oracle' for the value and best action.
@@ -60,7 +60,7 @@ But how to surpass the teacher? This is where we turn to RL and self-play. Alpha
 
 Finally the true elegance of AlphaZero emerges. As DeepMind described it, this use of MCTS is simultaneously "a powerful policy improvement operator" and "a powerful policy evaluation operator". In other words, the MCTS acts as both the judge and teacher, and though it is brute-force at heart, it turns AlphaZero into a self-sustaining engine of improvement.
 
-# References
+## References
 
 1. **Silver, D., Huang, A., et al. (2016).** [Mastering the Game of Go with Deep Neural Networks and Tree Search](https://www.nature.com/articles/nature16961). *Nature*, 529, 484–489.
 
