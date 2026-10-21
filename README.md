@@ -29,7 +29,11 @@ Small and medium games (TicTacToe and Connect Four respectively) are an ideal te
 
 I devised a protocol to allow for any two player perfect-information game to interface with my MCTS and AZ self-play framework, allowing me to wrap an external chess library, `python-chess`.
 
-On chess, the same computer achieved ~2k nodes/s, exposing inefficient overheads beyond using a deeper and wider CNN. I have explored several optimisations: reusing tree statistics for subsequent MCTS, selective deep search for a subset of positions, lazy instantiation of nodes, and reduced copying of the `Board` object. These experiments have improved the throughput to ~8k nodes/s. Code coming soon.
+On chess, the same computer achieved ~2k nodes/s, exposing inefficient overheads beyond using a deeper and wider CNN. I have explored several optimisations: reusing tree statistics for subsequent MCTS, selective deep search for a subset of positions, lazy instantiation of nodes, and reduced copying of the `Board` object.
+
+These experiments have improved the throughput to ~8k nodes/s, tapering off as games finish and batch size reduces. Consolidating games to fewer workers would fix this. Generation of 35k self-play games lasted a little over a day and generated 600M nodes across 2M example positions (+6M  non-training fast-searches). 100M nodes worth of search was carried over from previous MCTS trees. Code coming soon.
+
+![MCTS node evaluation metrics over iteration 001](./assets/iter001.chess_r200_p1_gw35_gpw1024_b64_e4_resume_chess_r40_p4_gw32_gpw256_b128_e4_model_000.png)
 
 # Future Directions
 ## Faster Training and Inference
