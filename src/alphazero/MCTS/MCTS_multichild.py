@@ -7,8 +7,8 @@ from copy import copy
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass
 
-from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameBase import GameBaseNumpy
+from alphazero.games.GameStateBase import GameStateNumpyBase
 
 # from viztracer import log_sparse
 import numpy as np
@@ -62,14 +62,14 @@ class MCTS_Instance(object):
     def __init__(self, rollouts: int, multi_sims: int, processes: int,
                  *, MCTS_factory: MCTS_Factory, **kwargs,
                  ) -> None:
-        game: GameBase = kwargs['game']
-        assert issubclass(game.__class__, GameBase)
+        game: GameBaseNumpy = kwargs['game']
+        assert issubclass(game.__class__, GameBaseNumpy)
 
         player = game.current_player
         assert player == -1 or player == 1
 
         state = game.state
-        assert issubclass(state.__class__, GameStateBase)
+        assert issubclass(state.__class__, GameStateNumpyBase)
 
         assert processes >= 1
 
@@ -175,7 +175,7 @@ class Node(object):
                  "value_sum",
                  "visits"]
     def __init__(self, parent: Node | None, parent_action: int | None,
-                 state: GameStateBase, player: int) -> None:
+                 state: GameStateNumpyBase, player: int) -> None:
         assert (
             (parent is None and parent_action is None) or
             (parent is not None and parent_action is not None)
@@ -223,7 +223,7 @@ class Node(object):
         #     assert self.visits == 1, f"Non-root node has {self.visits} visits; it should be 1."
 
         curr_state = self.state
-        valid_actions = curr_state.get_legal_actions(self.player)
+        valid_actions = curr_state.get_legal_actions()
         for action_idx in np.flatnonzero(valid_actions):
             new_state = curr_state.get_next_state(action_idx, self.player)
             self.children.append(Node(self, action_idx, new_state, -1 * self.player))
@@ -291,7 +291,7 @@ SimulationReturnType = tuple[int, float, bool]
 # Returns a value, with respect to the node that called the simulation.
 # The value is the expected score for the parent node taking an action which
 # resulted in the calling-node.
-def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
+def simulate_(curr_state: GameStateNumpyBase, curr_player: int, parent_action: int,
               *, target_sims: int, debug: int=0) -> tuple[int, float, bool]:
     # Find out if the game is already over
     value, terminated = curr_state.get_value_and_terminated(parent_action)
@@ -307,7 +307,7 @@ def simulate_(curr_state: GameStateBase, curr_player: int, parent_action: int,
         curr_player = origin_curr_player
         curr_state = copy(origin_curr_state)
         while True:
-            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions(curr_player))
+            valid_action_indexes = np.flatnonzero(curr_state.get_legal_actions())
             next_action = random.choice(valid_action_indexes)
 
             curr_state = curr_state.get_next_state(next_action, curr_player, copy=False)

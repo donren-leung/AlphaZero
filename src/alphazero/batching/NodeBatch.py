@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import GameStateNumpyBase
 
 # visits, total value, terminal
 SimulationReturnType = tuple[int, float, bool]
@@ -16,7 +16,7 @@ class NodeBatchRequest:
     curr_player: int
     target_sims: int
 
-    states_and_actions: list[tuple[int, GameStateBase]]
+    states_and_actions: list[tuple[int, GameStateNumpyBase]]
 
 @dataclass(slots=True, frozen=True)
 class NodeBatchResponse:
@@ -37,7 +37,7 @@ class AZ_NodeRequest:
     thread_id: int
 
     curr_player: int
-    state: GameStateBase
+    state: npt.NDArray[np.uint8]
 
 @dataclass(slots=True, frozen=True)
 class AZ_NodeBatchResponse:

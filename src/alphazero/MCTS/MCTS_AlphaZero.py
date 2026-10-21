@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
+from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_SimulationReturnType
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
 
@@ -86,6 +86,10 @@ class MCTS_Instance(object):
     def one_round_batch(self, worker_id: int, thread_id: int) -> \
                             tuple[Node, AZ_NodeRequest] | \
                             tuple[Node, AZ_SimulationReturnType]:
+        """
+        Returns a leaf node and a request for the model to evaluate the leaf node's state.
+        This state is encoded in the neutral player's perspective.
+        """
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
         # children that aren't made yet.)
@@ -132,7 +136,7 @@ class MCTS_Instance(object):
             worker_id,
             thread_id,
             curr.player,
-            curr.state.neutral_state(curr.player)
+            curr.state.encode_for_model(curr.player)
         )
 
     def _search(self) -> None:
@@ -143,7 +147,9 @@ class MCTS_Instance(object):
             if isinstance(request_or_response, AZ_NodeRequest):
                 self.model.eval()
                 with torch.no_grad():
-                    tensor_state = request_or_response.state.to_tensor().unsqueeze(0).to("cuda").to(torch.float32)
+                    tensor_state = torch.from_numpy(
+                        request_or_response.state
+                    ).unsqueeze(0).to("cuda").to(torch.float32)
                     policy, value = self.model(tensor_state)
 
                     policy = torch.softmax(policy, dim=1).squeeze(0).detach().cpu().numpy()
@@ -251,7 +257,7 @@ class Node(object):
         assert self.state is not None, "Node state must be set before expanding."
 
         curr_state = self.state
-        valid_actions = curr_state.get_legal_actions(self.player)
+        valid_actions = curr_state.get_legal_actions()
         # assert valid actions and policy are the same length
         assert len(valid_actions) == len(policy), f"valid_actions and policy must be the same length, got {len(valid_actions)} and {len(policy)}."
         # assert policy is a valid probability distribution

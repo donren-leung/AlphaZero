@@ -3,12 +3,12 @@ from typing import ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
-from .GameStateBase import GameStateBase
-from .GameBase import GameBase
+from .GameStateBase import GameStateNumpyBase
+from .GameBase import GameBaseNumpy
 
 type State = NDArray[np.int8]
 
-class ConnectFourState(GameStateBase):
+class ConnectFourState(GameStateNumpyBase):
     __slots__ = ["row_count", "col_count", "in_a_row"]
     def __init__(self, state: State):
         self.state = state
@@ -16,7 +16,7 @@ class ConnectFourState(GameStateBase):
         self.col_count = state.shape[1]
         self.in_a_row = 4
 
-    def get_legal_actions(self, player: int) -> NDArray[np.bool_]:
+    def get_legal_actions(self) -> NDArray[np.bool_]:
         return (self.state[0] == 0).astype(np.bool_)
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ConnectFourState':
@@ -66,7 +66,7 @@ class ConnectFourState(GameStateBase):
 
         if check_win(self, action):
             return 1, True
-        elif not np.any(self.get_legal_actions(player)):
+        elif not np.any(self.get_legal_actions()):
             return 0, True
         return 0, False
 
@@ -76,7 +76,7 @@ class ConnectFourState(GameStateBase):
     def __copy__(self) -> 'ConnectFourState':
         return ConnectFourState(np.copy(self.state))
 
-class ConnectFourGame(GameBase[ConnectFourState]):
+class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
     row_count: ClassVar[int] = 6
     col_count: ClassVar[int] = 7
     action_size: ClassVar[int] = col_count
@@ -90,7 +90,7 @@ class ConnectFourGame(GameBase[ConnectFourState]):
         return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        return self.state.get_legal_actions(self.current_player)
+        return self.state.get_legal_actions()
 
     def _make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)

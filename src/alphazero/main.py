@@ -9,10 +9,12 @@ import torch
 
 from .games.TicTacToe import TicTacToeGame
 from .games.ConnectFour import ConnectFourGame
+from .games.Chess import ChessGame
 from .games.GameBase import GameBase
 from .MCTS.MCTS_multichild import MCTS_Factory
 from .MCTS.MCTS_AlphaZero import MCTS_Factory as MCTS_Factory_AZ
 from .models.model import ResNet
+from .utils import parse_game_type, game_types
 
 
 # Return action -1 to quit
@@ -38,21 +40,19 @@ def human_gamelogic(move_legalities, curr_player) -> int:
         return action
 
 def main(args) -> None:
-    game: GameBase
-    match args.game:
-        case "tictac":
-            game = TicTacToeGame()
-        case "c4":
-            game = ConnectFourGame()
-        case _:
-            raise ValueError("Unknown game '{args.game}'")
+    game: GameBase = args.game_type()
 
     MCTS_factory: MCTS_Factory | MCTS_Factory_AZ
     model: ResNet | None = None
     if args.model is not None:
         if args.model_args is None:
-            raise ValueError("If --model is specified, --model-args must also be specified.")
-        model_args_path = args.model_args
+            # check for args.json in the same directory as the model file
+            model_args_path = args.model.parent / "args.json"
+            if not model_args_path.exists():
+                raise ValueError("If --model is specified, --model-args must also be specified.")
+        else:
+            model_args_path = args.model_args
+
         if not model_args_path.exists():
             raise FileNotFoundError(f"Model args file {model_args_path} does not exist.")
         with open(model_args_path, "r") as f:
@@ -128,8 +128,13 @@ if __name__ == "__main__":
     # Create the parser
     parser = argparse.ArgumentParser(description='TicTacToe/C4 with MCTS')
 
-    parser.add_argument('game', choices=['tictac', 'c4'], type=str,
-                        help='Play tictactoe or connect four')
+    parser.add_argument(
+        "--game-type", "-game",
+        type=parse_game_type,
+        default=ConnectFourGame,
+        metavar=f"{','.join(game_types.keys())}",
+        help="Type of game to play (default: c4 (ConnectFour))",
+    )
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--f', '--1', '--first', dest='first', action='store_true',

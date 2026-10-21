@@ -1,13 +1,14 @@
+from dataclasses import dataclass
 import logging
 import math
 import time
 
 from queue import Queue, Empty
 from threading import Thread, Lock, Condition
-from typing import Generic, TypeVar, Type
+from typing import Generic, Self, TypeVar, Type
 
 import numpy as np
-import numpy.typing as npt
+from numpy.typing import NDArray
 
 from .NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse, AZ_SimulationReturnType
 from .Pool import mpQueueGen
@@ -164,7 +165,7 @@ class GameWorker(Generic[GameStateT], object):
         # player
         first_player = game.current_player
         while True:
-            logging.debug(f"thread {thread_id} move {len(game.state_history)}")
+            logging.debug(f"thread {thread_id} move {len(game.history.get('states', []))}")
 
             # Game after last move is still going, create new MCTS instance.
             MCTS_instance = self.MCTS_factory.make_instance(game=game)
@@ -195,7 +196,7 @@ class GameWorker(Generic[GameStateT], object):
                     if node is MCTS_instance.root:
                         # Introduce Dirichlet noise to root node for exploration
                         assert node.state is not None
-                        legal_actions = node.state.get_legal_actions(node.player)
+                        legal_actions = node.state.get_legal_actions()
                         y_policy = mask_and_norm(legal_actions, y_policy)
 
                         legal_idxs = np.flatnonzero(legal_actions)
@@ -223,8 +224,8 @@ class GameWorker(Generic[GameStateT], object):
                 action_probs[child.parent_action] = child.visits
             action_probs /= np.sum(action_probs, dtype=np.float32)
 
-            game.state_history.append(game.state.neutral_state(game.current_player))
-            game.action_prob_history.append(action_probs)
+            game.history['states'].append(game.state.to_compact_repr(game.current_player))
+            game.history['action_probs'].append(SparsePolicy.from_dense(action_probs))
 
             temperature_probs = np.power(action_probs, 1.0 / self.MCTS_factory.temperature)
             temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
@@ -238,13 +239,13 @@ class GameWorker(Generic[GameStateT], object):
 
             value, terminated = game.get_value_and_terminated(action)
             if terminated:
-                assert len(game.state_history) == len(game.action_prob_history)
+                assert len(game.history['states']) == len(game.history['action_probs'])
                 hist_player = first_player
                 last_player = game.get_opponent(game.current_player)
 
-                for _ in game.action_prob_history:
+                for _ in game.history['action_probs']:
                     outcome = value if hist_player == last_player else -value
-                    game.outcome.append(outcome)
+                    game.history['outcome'].append(outcome)
                     hist_player = game.get_opponent(hist_player)
 
                 break
@@ -255,3 +256,24 @@ class GameWorker(Generic[GameStateT], object):
 
         with self.metrics_lock:
             self.active_games -= 1
+
+@dataclass(frozen=True, slots=True)
+class SparsePolicy:
+    actions: NDArray[np.uint16]
+    probs: NDArray[np.float32]
+
+    @classmethod
+    def from_dense(cls, policy: NDArray) -> Self:
+        actions = np.flatnonzero(policy)
+        assert policy.size <= 65536
+
+        return cls(
+            actions=actions.astype(np.uint16),
+            probs=policy[actions].astype(np.float32),
+        )
+
+    def unpack(self, action_size: int) -> NDArray[np.float32]:
+        policy = np.zeros(action_size, dtype=np.float32)
+        policy[self.actions] = self.probs
+        return policy
+    

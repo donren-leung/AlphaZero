@@ -2,10 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from alphazero.games.GameBase import GameBase
+from alphazero.games.GameBase import GameBaseNumpy
 
 class ResNet(nn.Module):
     def __init__(self,
+                 game_input_channels: int,
                  game_spatial_size: int,
                  game_action_size: int,
                  num_resBlocks: int,
@@ -16,7 +17,7 @@ class ResNet(nn.Module):
     ):
         super().__init__()
         self.startBlock = nn.Sequential(
-            nn.Conv2d(3, num_channels, kernel_size=3, padding=1),
+            nn.Conv2d(game_input_channels, num_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(num_channels),
             nn.ReLU()
         )

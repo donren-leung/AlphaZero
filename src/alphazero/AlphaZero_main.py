@@ -12,13 +12,12 @@ import numpy as np
 from numpy.typing import NDArray
 from tqdm import trange
 
-from alphazero.games.GameBase import GameBase
-from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
-
 from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
-from .batching.AZ_GameWorker import GameWorker, mpQueueGen
+from .batching.AZ_GameWorker import GameWorker, mpQueueGen, SparsePolicy
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
-from .games.GameStateBase import GameStateBase
+from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase, CompactRepr
+from .MCTS.MCTS_AlphaZero import MCTS_Factory
 from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
@@ -29,7 +28,7 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-    ) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+    ) -> list[tuple[CompactRepr, SparsePolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
     print(f"Using GPU for node evaluation.")
@@ -80,11 +79,11 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[GameStateBase, NDArray[np.float32], int]] = []
+    memory: list[tuple[CompactRepr, SparsePolicy, int]] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()
-        memory.extend(zip(game.state_history, game.action_prob_history, game.outcome, strict=True))
+        memory.extend(zip(game.history['states'], game.history['action_probs'], game.history['outcome'], strict=True))
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
@@ -138,20 +137,20 @@ class AlphaZero:
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[GameStateBase, NDArray[np.float32], int]]:
+                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, SparsePolicy, int]]:
         self.model_args["state_dict"] = self.model.state_dict()
         return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
-    def train(self, memory: list[tuple[GameStateBase, NDArray[np.float32], int]]):
+    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparsePolicy, int]]):
         random.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
-            states = [state for state, _, _ in sample]
-            policy_targets = [policy for _, policy, _ in sample]
+            states = [compact_repr.unpack() for compact_repr, _, _ in sample]
+            policy_targets = [policy.unpack(GAME_TYPE.action_size) for _, policy, _ in sample]
             value_targets = [value for _, _, value in sample]
 
-            state_tensor = torch.stack([state.to_tensor() for state in states]).to("cuda").to(dtype=torch.float32)
+            state_tensor = torch.from_numpy(np.stack(states)).to("cuda").to(dtype=torch.float32)
             policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to("cuda").to(dtype=torch.float32)
             value_targets_tensor = torch.tensor(value_targets).reshape(-1, 1).to("cuda").to(dtype=torch.float32)
 
@@ -179,7 +178,7 @@ class AlphaZero:
             self.model.to("cuda")
             self.model.train()
             for epoch in trange(self.args.epochs):
-                self.train(memory)
+                self.train(self.args.game_type,memory)
 
             torch.save(
                 self.model.state_dict(),
@@ -195,11 +194,12 @@ if __name__ == "__main__":
     args = parse_args()
 
     model_args = {
+        "game_input_channels": args.game_type.input_channels,
         "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
         "game_action_size": args.game_type.action_size,
-        "num_resBlocks": 6,
-        "num_channels": 64,
-        "head_hidden_size": 16,
+        "num_resBlocks": 9,
+        "num_channels": 256,
+        "head_hidden_size": 64,
         "batch_size": args.batch_size,
         "state_dict": None,
     }

@@ -3,19 +3,21 @@ import queue
 import threading
 import time
 
+from alphazero.games.GameBase import GameBase
 from alphazero.games.TicTacToe import TicTacToeGame
 from alphazero.games.ConnectFour import ConnectFourGame
+from alphazero.games.Chess import ChessGame
 
 from .batching.AZ_GameWorker import GameWorker, mpQueueGen
 
-GameType = type[TicTacToeGame] | type[ConnectFourGame]
+GameType = type[GameBase]
+game_types: dict[str, GameType] = {
+    "ttt": TicTacToeGame,
+    "c4": ConnectFourGame,
+    "chess": ChessGame,
+}
 
 def parse_game_type(value: str) -> GameType:
-    game_types: dict[str, GameType] = {
-        "ttt": TicTacToeGame,
-        "c4": ConnectFourGame,
-    }
-
     try:
         return game_types[value]
     except KeyError:
@@ -77,10 +79,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--game-type",
+        "-game",
         type=parse_game_type,
         default=ConnectFourGame,
-        metavar="{TicTacToe,ConnectFour}",
-        help="Type of game to play (default: ConnectFour)",
+        metavar=f"{','.join(game_types.keys())}",
+        help="Type of game to play (default: c4 (ConnectFour))",
     )
 
     parser.add_argument(
