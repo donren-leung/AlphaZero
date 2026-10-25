@@ -42,6 +42,7 @@ While this framework can fully saturate a GPU, promising future directions can r
 Areas of interest include:
 - Experimenting with mixed precision inference and training.
 - Maintaining a buffer replay, reanalysis, continual model iteration.
+- Being more efficient with samples by modifying the value target [(Willemsen et al. 2021)](https://link.springer.com/article/10.1007/s00521-021-05928-5).
 - Using a transformer architecture to better model long-range piece interactions.
 
 ### Making Chess Engines Explainable
@@ -68,6 +69,8 @@ Finally the true elegance of AlphaZero emerges. As DeepMind described it, this u
 
 3. **Silver, D., Hubert, T., et al. (2017).** [Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm](https://arxiv.org/abs/1712.01815). *arXiv:1712.01815*.
 
-4. **Ruoss, A., Delétang, G., et al. (2024).** [Amortized Planning with Large-Scale Transformers: A Case Study on Chess](https://arxiv.org/abs/2402.04494). *arXiv:2402.04494*.
+4. **Willemsen, D., Baier, H., et al. (2021).** [Value targets in off-policy AlphaZero: a new greedy backup](https://link.springer.com/article/10.1007/s00521-021-05928-5) *Neural Comput & Applic 34, 1801–1814*.
 
-5. **Bhaskar, A., Cheng, J., & Chen, D. (2026).** [Language Models that Play Chess and Explain Their Moves](https://arxiv.org/abs/2610.03695). *arXiv:2610.03695*.
+5. **Ruoss, A., Delétang, G., et al. (2024).** [Amortized Planning with Large-Scale Transformers: A Case Study on Chess](https://arxiv.org/abs/2402.04494). *arXiv:2402.04494*.
+
+6. **Bhaskar, A., Cheng, J., & Chen, D. (2026).** [Language Models that Play Chess and Explain Their Moves](https://arxiv.org/abs/2610.03695). *arXiv:2610.03695*.
