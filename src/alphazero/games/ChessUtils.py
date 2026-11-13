@@ -112,12 +112,7 @@ def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
         ):
             promotion = chess.QUEEN
 
-    move = chess.Move(from_sq, to_sq, promotion=promotion)
-    if move not in set(board.generate_legal_moves()):
-        raise ValueError(
-            f"Action {action} is not a canonical legal move: {move.uci()}"
-        )
-    return move
+    return chess.Move(from_sq, to_sq, promotion=promotion)
 
 def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> NDArray[np.uint8]:
     """

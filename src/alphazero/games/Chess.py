@@ -1,16 +1,15 @@
 from dataclasses import dataclass
-from typing import ClassVar, Self
+from typing import ClassVar
 
 import chess
 import numpy as np
 from numpy.typing import NDArray
-import torch
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
 from .ChessUtils import encode_move, decode_action, encode_chess, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
 
-type State = chess.Board
+type Board = chess.Board
 type ModelInput = NDArray[np.uint8]
 
 @dataclass(frozen=True, slots=True)
@@ -32,48 +31,48 @@ class CompactChessState:
         return encode_chess(board, self.repetition_flags)
 
 class ChessState(GameStateBase):
-    __slots__ = ["row_count", "col_count", "in_a_row"]
-    def __init__(self, state: State):
-        self.state = state
+    __slots__ = ["board", "row_count", "col_count"]
+    def __init__(self, board: Board):
+        self.board = board
         self.row_count = 8
         self.col_count = 8
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        player = 1 if self.state.turn == chess.WHITE else -1
+        player = 1 if self.board.turn == chess.WHITE else -1
         legal_actions = np.zeros(CHESS_ACTION_SIZE, dtype=np.bool_)
-        for move in self.state.legal_moves:
-            action = encode_move(self.state, move, player)
+        for move in self.board.legal_moves:
+            action = encode_move(self.board, move, player)
             legal_actions[action] = True
         return legal_actions
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ChessState':
         if copy:
-            new_state = self.state.copy()
+            new_state = self.board.copy()
         else:
-            new_state = self.state
+            new_state = self.board
 
         move = decode_action(new_state, action, player)
         new_state.push(move)
         return ChessState(new_state)
 
-    def get_value_and_terminated(self, action: int=0):
-        if self.state.ply() >= 512:
+    def get_value_and_terminated(self):
+        if self.board.ply() >= 512:
             # Hard cap on 512 half-moves.
             return 0, True
-        outcome = self.state.outcome(claim_draw=True)
+        outcome = self.board.outcome(claim_draw=True)
         if outcome is None:
             return 0, False
         if outcome.winner is None:
             return 0, True
         # Checkmate. The player who just moved is the winner, so the current player is the loser.
-        assert outcome.winner is not self.state.turn
+        assert outcome.winner is not self.board.turn
         return 1, True
 
     def encode_for_model(self, player: int=0) -> ModelInput:
-        return encode_chess(self.state)
+        return encode_chess(self.board)
 
     def to_compact_repr(self, player: int=0) -> CompactChessState:
-        board = self.state.copy(stack=True)
+        board = self.board.copy(stack=True)
 
         moves: list[str] = []
         repetition_flags: list[int] = []
@@ -102,10 +101,10 @@ class ChessState(GameStateBase):
         )
 
     def __str__(self) -> str:
-        return str(self.state)
+        return str(self.board)
 
     def __copy__(self) -> 'ChessState':
-        return ChessState(self.state.copy())
+        return ChessState(self.board.copy())
 
 class ChessGame(GameBase[ChessState]):
     action_size: ClassVar[int] = CHESS_ACTION_SIZE
@@ -126,8 +125,8 @@ class ChessGame(GameBase[ChessState]):
     def _make_move(self, action: int, player: int) -> None:
         self.state = self.state.get_next_state(action, player)
 
-    def get_value_and_terminated(self, action: int):
-        return self.state.get_value_and_terminated(action)
+    def get_value_and_terminated(self):
+        return self.state.get_value_and_terminated()
 
     def encode_for_model(self) -> ModelInput:
         return self.state.encode_for_model()

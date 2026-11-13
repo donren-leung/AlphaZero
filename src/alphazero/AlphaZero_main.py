@@ -1,6 +1,7 @@
 import argparse
 import multiprocessing as mp
 import json
+import re
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 import random
@@ -9,12 +10,12 @@ from threading import Thread, Event
 import torch
 import torch.nn.functional as F
 import numpy as np
-from numpy.typing import NDArray
 from tqdm import trange
 
-from .batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchResponse
-from .batching.AZ_GameWorker import GameWorker, mpQueueGen, SparsePolicy
+from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, SparseLegalPolicy
+from .batching.AZ_GameWorker import GameWorker
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
+from .batching.Queues import mpQueueGen
 from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase, CompactRepr
 from .MCTS.MCTS_AlphaZero import MCTS_Factory
@@ -28,7 +29,7 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-    ) -> list[tuple[CompactRepr, SparsePolicy, int]]:
+    ) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
     print(f"Using GPU for node evaluation.")
@@ -41,7 +42,7 @@ def self_play(
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
     # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
-    request_queue: mpQueueGen[list[AZ_NodeRequest] | None] = mpQueueGen(ctx)
+    request_queue: mpQueueGen[AZ_NodeBatchRequest | None] = mpQueueGen(ctx)
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
     results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
                                                     for _ in range(TARGET_GAME_WORKERS)]
@@ -79,11 +80,11 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[CompactRepr, SparsePolicy, int]] = []
+    memory: list[tuple[CompactRepr, SparseLegalPolicy, int]] = []
     for _ in range(expecting_results):
         _, game = all_game_results.get()
         counter.increment()
-        memory.extend(zip(game.history['states'], game.history['action_probs'], game.history['outcome'], strict=True))
+        memory.extend(zip(game.history['states'], game.history['MCTS_results'], game.history['outcome'], strict=True))
 
     for game_worker_p in game_worker_ps:
         game_worker_p.join()
@@ -120,28 +121,75 @@ class AlphaZero:
             f"_b{args.batch_size}"
             f"_e{args.epochs}"
         )
+        if args.resume is not None:
+            settings_name += f"_resume_{args.resume.parent.name}_{args.resume.stem}"
 
         project_root = Path(__file__).resolve().parent.parent.parent
         self.artifact_dir = project_root / "artifacts" / settings_name
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        args_payload = {k: v for k, v in model_args.items() if k != "batch_size"}
+        self.start_iteration = 0
+        if args.resume is not None:
+            model_path = args.resume.expanduser().resolve()
+
+            if not model_path.is_file():
+                raise FileNotFoundError(model_path)
+
+            # Derive optimizer checkpoint from model checkpoint.
+            if not re.fullmatch(r"model_\d+\.pt", model_path.name):
+                raise ValueError(
+                    "Resume checkpoint must be named model_NNN.pt"
+                )
+
+            optimizer_path = model_path.with_name(
+                model_path.name.replace("model_", "optimizer_", 1)
+            )
+
+            if not optimizer_path.is_file():
+                raise FileNotFoundError(optimizer_path)
+
+            # Restoring weights verifies parameter/buffer shape compatibility.
+            self.model.load_state_dict(
+                torch.load(model_path, map_location="cpu", weights_only=True)
+            )
+
+            # Restore optimizer state.
+            # Optimizer is still associated with the model's CPU parameters.
+            self.optimizer.load_state_dict(
+                torch.load(optimizer_path, map_location="cpu", weights_only=True)
+            )
+
+            # Continue from the saved iteration number.
+            checkpoint_iteration = int(model_path.stem.removeprefix("model_"))
+            self.start_iteration = checkpoint_iteration + 1
+
+            print(f"Resumed from {model_path}")
+
+        self.model_args["state_dict"] = self.model.state_dict()
+
+        args_payload = {k: v for k, v in model_args.items() if k not in ("batch_size", "state_dict")}
+        args_payload["resume_from"] = (str(args.resume.expanduser().resolve()) if args.resume is not None else None)
+
         args_path = self.artifact_dir / "args.json"
         with open(args_path, "w") as f:
             json.dump(args_payload, f, indent=4)
 
-        self.model_args["state_dict"] = self.model.state_dict()
+    def move_optimizer_state(self, device: torch.device | str) -> None:
+        for state in self.optimizer.state.values():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(device)
 
     def self_play(self,
                   GAME_TYPE: type[GameBase[GameStateBase]],
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, SparsePolicy, int]]:
+                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
         self.model_args["state_dict"] = self.model.state_dict()
         return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
 
-    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparsePolicy, int]]):
+    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
         random.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
@@ -165,8 +213,10 @@ class AlphaZero:
             self.optimizer.step()
 
     def learn(self):
-        for iteration in range(self.args.iter):
+        for iteration in range(self.start_iteration, self.start_iteration + self.args.iter):
             self.model.to("cpu")
+            self.move_optimizer_state("cpu")
+
             memory = self.self_play(
                 self.args.game_type,
                 self.args.rollouts,
@@ -176,6 +226,7 @@ class AlphaZero:
             )
 
             self.model.to("cuda")
+            self.move_optimizer_state("cuda")
             self.model.train()
             for epoch in trange(self.args.epochs):
                 self.train(self.args.game_type,memory)
@@ -190,7 +241,9 @@ class AlphaZero:
                 self.artifact_dir / f"optimizer_{iteration:03d}.pt",
             )
 
-if __name__ == "__main__":
+            del memory
+
+def main():
     args = parse_args()
 
     model_args = {

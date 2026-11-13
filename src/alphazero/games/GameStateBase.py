@@ -4,7 +4,6 @@ from typing import Any, Protocol, Self, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
-import torch
 
 type ModelInput = NDArray[np.uint8]
 type NumpyState = NDArray[np.int8]
@@ -14,9 +13,9 @@ class CompactRepr(Protocol):
         ...
 
 class GameStateBase(ABC):
-    __slots__ = ["state"]
-    def __init__(self, state: Any):
-        self.state = state
+    __slots__ = ["board"]
+    def __init__(self, board: Any):
+        self.board = board
 
     @abstractmethod
     def get_legal_actions(self) -> NDArray[np.bool_]:
@@ -27,7 +26,7 @@ class GameStateBase(ABC):
         ...
 
     @abstractmethod
-    def get_value_and_terminated(self, action: int) -> tuple[int, bool]:
+    def get_value_and_terminated(self) -> tuple[int, bool]:
         """
         Checks whether the game state (resulting after the queried action) is terminal.\
         If so, return the reward -1 to 1 for the player who made the queried action"""

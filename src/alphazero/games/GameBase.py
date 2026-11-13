@@ -6,7 +6,7 @@ from typing import Any, Generic, TypeVar, ClassVar, Type, final, Literal
 from .GameStateBase import ModelInput, GameStateBase, GameStateNumpyBase
 
 import numpy as np
-from numpy import int8, bool_
+from numpy import bool_
 from numpy.typing import NDArray
 
 GameStateT = TypeVar('GameStateT', bound='GameStateBase')
@@ -51,9 +51,9 @@ class GameBase(Generic[GameStateT], ABC):
         ...
 
     @abstractmethod
-    def get_value_and_terminated(self, action: int) -> tuple[Literal[1], Literal[True]] | \
-                                                        tuple[Literal[0], Literal[True]] | \
-                                                        tuple[Literal[0], Literal[False]]:
+    def get_value_and_terminated(self) -> tuple[Literal[1], Literal[True]] | \
+                                        tuple[Literal[0], Literal[True]] | \
+                                        tuple[Literal[0], Literal[False]]:
         ...
 
     @final

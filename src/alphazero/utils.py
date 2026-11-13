@@ -1,19 +1,20 @@
 import argparse
+from pathlib import Path
 import queue
 import threading
 import time
 
 from alphazero.games.GameBase import GameBase
-from alphazero.games.TicTacToe import TicTacToeGame
-from alphazero.games.ConnectFour import ConnectFourGame
+# from alphazero_chess.games.TicTacToe import TicTacToeGame
+# from alphazero_chess.games.ConnectFour import ConnectFourGame
 from alphazero.games.Chess import ChessGame
 
-from .batching.AZ_GameWorker import GameWorker, mpQueueGen
+from .batching.Queues import mpQueueGen
 
 GameType = type[GameBase]
 game_types: dict[str, GameType] = {
-    "ttt": TicTacToeGame,
-    "c4": ConnectFourGame,
+    # "ttt": TicTacToeGame,
+    # "c4": ConnectFourGame,
     "chess": ChessGame,
 }
 
@@ -81,9 +82,9 @@ def parse_args() -> argparse.Namespace:
         "--game-type",
         "-game",
         type=parse_game_type,
-        default=ConnectFourGame,
+        default=ChessGame,
         metavar=f"{','.join(game_types.keys())}",
-        help="Type of game to play (default: c4 (ConnectFour))",
+        help="Type of game to play (default: chess)",
     )
 
     parser.add_argument(
@@ -100,6 +101,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of epochs to train the model per iteration",
+    )
+
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to a saved model to resume training from (default: None)",
     )
 
     return parser.parse_args()
@@ -239,7 +247,6 @@ def metrics_daemon(
 
         interval_start = now
         next_print = now + print_interval_s
-
 
 def metrics_daemon_CPU(
     stop_event: threading.Event,
