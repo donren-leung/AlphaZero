@@ -69,6 +69,20 @@ class GameBase(Generic[GameStateT], ABC):
         ...
 
     @abstractmethod
+    def parse_move_str(self, cmd: str) -> int:
+        """
+        Parse a move string (e.g. "e4" in chess) into an action index.
+        """
+        ...
+
+    @abstractmethod
+    def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
+        """
+        Print the legal moves in a human-readable format (e.g. "e4" in chess).
+        """
+        ...
+
+    @abstractmethod
     def __repr__(self) -> str:
         ...
 
@@ -85,11 +99,19 @@ class GameBaseNumpy(Generic[GameStateNumpyT], GameBase[GameStateNumpyT]):
     def __init__(self, state: GameStateNumpyT | None = None, starting_player: int=1) -> None:
        super().__init__(state, starting_player)
 
+    def parse_move_str(self, cmd: str) -> int:
+        return int(cmd)
+
+    def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
+        return [
+            str(i) for i in range(self.action_size) if legal_actions[i]
+        ]
+
     def encode_for_model(self) -> ModelInput:
         state = self.state.neutral_state(self.current_player)
         return np.stack([
-            state.state == -1,
-            state.state == 0,
-            state.state == 1,
+            state.board == -1,
+            state.board == 0,
+            state.board == 1,
         ]).astype(np.uint8, copy=False)
 

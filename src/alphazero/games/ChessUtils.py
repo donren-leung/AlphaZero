@@ -76,7 +76,7 @@ def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
     """Decode an action, rejecting off-board moves but largely assumes move legality."""
     _check_player(board, player)
     if type(action) is not int or not 0 <= action < CHESS_ACTION_SIZE:
-        raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE})")
+        raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE}), got {action=}")
 
     position, plane = divmod(action, 73)
     source_file, source_rank = divmod(position, 8)

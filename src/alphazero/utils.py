@@ -5,16 +5,16 @@ import threading
 import time
 
 from alphazero.games.GameBase import GameBase
-# from alphazero_chess.games.TicTacToe import TicTacToeGame
-# from alphazero_chess.games.ConnectFour import ConnectFourGame
+from alphazero.games.TicTacToe import TicTacToeGame
+from alphazero.games.ConnectFour import ConnectFourGame
 from alphazero.games.Chess import ChessGame
 
 from .batching.Queues import mpQueueGen
 
 GameType = type[GameBase]
 game_types: dict[str, GameType] = {
-    # "ttt": TicTacToeGame,
-    # "c4": ConnectFourGame,
+    "ttt": TicTacToeGame,
+    "c4": ConnectFourGame,
     "chess": ChessGame,
 }
 

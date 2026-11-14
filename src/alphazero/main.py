@@ -8,8 +8,8 @@ import torch
 import numpy as np
 from numpy.typing import NDArray
 
-# from .games.TicTacToe import TicTacToeGame
-# from .games.ConnectFour import ConnectFourGame
+from .games.TicTacToe import TicTacToeGame
+from .games.ConnectFour import ConnectFourGame
 from .games.Chess import ChessGame
 from .games.ChessUtils import decode_action, encode_move
 from .games.GameBase import GameBase
@@ -19,20 +19,19 @@ from .models.model import ResNet
 from .utils import parse_game_type, game_types
 
 # Return action -1 to quit
-def human_gamelogic(move_legalities: NDArray[np.bool_], curr_player: int, game: ChessGame) -> int:
+def human_gamelogic(move_legalities: NDArray[np.bool_], game: GameBase) -> int:
     while True:
         try:
-            cmd = input(f"Human (player {curr_player}):").strip()
+            cmd = input(f"Human (player {game.current_player}):").strip()
         except EOFError:
             return -1
         if cmd == "q" or cmd == "":
             return -1
 
         try:
-            move = game.state.board.parse_san(cmd)
-            action = encode_move(game.state.board, move, curr_player)
-        except ValueError:
-            print(f"Your input: {cmd} (numbers only). Press q to quit.")
+            action = game.parse_move_str(cmd)
+        except ValueError as e:
+            print(f"Your input: {cmd}. Error: {e}. Press q to quit.")
             continue
 
         if move_legalities[action] == 0:
@@ -42,8 +41,8 @@ def human_gamelogic(move_legalities: NDArray[np.bool_], curr_player: int, game: 
         return action
 
 def main(args) -> None:
-    # game: GameBase = args.game_type()
-    game = ChessGame()
+    game: GameBase = args.game_type()
+    # game = ChessGame()
 
     MCTS_factory: MCTS_Factory | None = None
     model: ResNet | None = None
@@ -53,7 +52,7 @@ def main(args) -> None:
             # check for args.json in the same directory as the model file
             model_args_path = args.model.parent / "args.json"
             if not model_args_path.exists():
-                raise ValueError("If --model is specified, --model-args must also be specified.")
+                raise ValueError("Cannot automatically find model args file. --model-args must also be specified.")
         else:
             model_args_path = args.model_args
 
@@ -96,24 +95,21 @@ def main(args) -> None:
     while True:
         print(game, flush=True)
         curr_player = game.current_player
-        move_legalities = game.get_legal_actions()
-
-        print("legal moves", [
-            game.state.board.san(decode_action(game.state.board, i, game.current_player))
-            for i in range(game.action_size) if move_legalities[i]
-        ])
+        legal_actions = game.get_legal_actions()
+        legal_moves = game.get_legal_moves(legal_actions)
+        print("legal moves", legal_moves)
 
         if curr_player in computer_players:
             assert MCTS_factory is not None
             mcts_instance = MCTS_factory.make_instance(game=game, model=model)
-            result = mcts_instance.search(game.state.board)
+            result = mcts_instance.search(game.state)
 
             action = result.best_action
             best_move_str = result.best_move_str
             print(f"Computer (player {curr_player}): {best_move_str}.\nThe visits were:")
             print(result)
         else:
-            action = human_gamelogic(move_legalities, curr_player, game)
+            action = human_gamelogic(legal_actions, game)
             if action == -1:
                 print("Quitting game...")
                 break
@@ -134,15 +130,15 @@ def main(args) -> None:
 
 if __name__ == "__main__":
     # Create the parser
-    parser = argparse.ArgumentParser(description='TicTacToe/C4 with MCTS')
+    parser = argparse.ArgumentParser(description='Two player games with AlphaZero using MCTS')
 
-    # parser.add_argument(
-    #     "--game-type", "-game",
-    #     type=parse_game_type,
-    #     default=ChessGame,
-    #     metavar=f"{','.join(game_types.keys())}",
-    #     help="Type of game to play (default: chess)",
-    # )
+    parser.add_argument(
+        "--game-type", "-game",
+        type=parse_game_type,
+        default=ChessGame,
+        metavar=f"{','.join(game_types.keys())}",
+        help="Type of game to play (default: chess)",
+    )
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--f', '--1', '--first', dest='first', action='store_true',

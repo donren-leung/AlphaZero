@@ -213,11 +213,11 @@ class GameWorker(Generic[GameStateT], object):
 
                     # Update prior probability from the neural network output
                     node.expand(eval_sparse_result)
-                    node.backpropogate(1, eval_sparse_result.value, False, MCTS_instance.chess_state.board)
+                    node.backpropogate(1, eval_sparse_result.value, False, MCTS_instance.game_state)
                 else:
                     # Cached result; no request is sent.
                     logging.debug(f"thread {thread_id} (cached) batchresponse")
-                    node.backpropogate(1, request_or_response.value, True, MCTS_instance.chess_state.board)
+                    node.backpropogate(1, request_or_response.value, True, MCTS_instance.game_state)
 
                 if self.MCTS_factory.debug > 0:
                     MCTS_instance.root.print_children(0, limit=2)

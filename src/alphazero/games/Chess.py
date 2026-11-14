@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import chess
 import numpy as np
@@ -30,7 +30,7 @@ class CompactChessState:
 
         return encode_chess(board, self.repetition_flags)
 
-class ChessState(GameStateBase):
+class ChessState(GameStateBase[chess.Move]):
     __slots__ = ["board", "row_count", "col_count"]
     def __init__(self, board: Board):
         self.board = board
@@ -54,6 +54,21 @@ class ChessState(GameStateBase):
         move = decode_action(new_state, action, player)
         new_state.push(move)
         return ChessState(new_state)
+
+    def encode_move(self, move: chess.Move) -> int:
+        return encode_move(self.board, move, 1 if self.board.turn == chess.WHITE else -1)
+
+    def decode_action(self, action: int, player: int) -> chess.Move:
+        return decode_action(self.board, action, player)
+
+    def push_to_board(self, move: chess.Move) -> None:
+        self.board.push(move)
+
+    def move_repr(self, move: chess.Move) -> str:
+        return self.board.san(move)
+
+    def pop_board(self) -> chess.Move:
+        return self.board.pop()
 
     def get_value_and_terminated(self):
         if self.board.ply() >= 512:
@@ -130,6 +145,21 @@ class ChessGame(GameBase[ChessState]):
 
     def encode_for_model(self) -> ModelInput:
         return self.state.encode_for_model()
+
+    def parse_move_str(self, cmd: str) -> int:
+        move = self.state.board.parse_san(cmd)
+        action = encode_move(self.state.board, move, self.current_player)
+
+        return action
+
+    def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
+        """
+        Print the legal moves in a human-readable format (e.g. "e4" in chess).
+        """
+        return [
+            self.state.board.san(decode_action(self.state.board, i, self.current_player))
+            for i in range(self.action_size) if legal_actions[i]
+        ]
 
     def __repr__(self) -> str:
         return "Chess"

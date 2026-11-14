@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import math
+from typing import Generic, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,8 +12,8 @@ import chess
 from alphazero.batching.NodeBatch import BatchSparseLegalPolicy, SparseLegalPolicy, AZ_NodeRequest
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
-from alphazero.games.Chess import ChessGame
-from alphazero.games.ChessUtils import decode_action, encode_move
+# from alphazero.games.Chess import ChessGame
+# from alphazero.games.ChessUtils import decode_action, encode_move
 
 """
 Special Implementation of MCTS for AlphaZero chess.
@@ -21,7 +22,10 @@ When we traverse down the tree, we generate the next game state on-the-fly by ap
 On the way back up the tree we pop the game state back to the root node.
 """
 
-class MCTS_Factory(object):
+GameStateT = TypeVar('GameStateT', bound='GameStateBase')
+MoveT = TypeVar("MoveT")
+
+class MCTS_Factory(Generic[GameStateT, MoveT]):
     DEFAULT_EXPLORATION_PARAM = 1.41
     debug = 0
     exploration = DEFAULT_EXPLORATION_PARAM
@@ -47,63 +51,49 @@ class MCTS_Factory(object):
         self.temperature = temperature
         self.__class__.temperature = temperature
 
-    def make_instance(self, **kwargs) -> MCTS_Instance:
+    def make_instance(self, **kwargs) -> MCTS_Instance[GameStateT, MoveT]:
         return MCTS_Instance(self.rollouts, MCTS_factory=self, **kwargs)
 
 @dataclass(slots=True, frozen=True)
-class MCTS_Result():
-    action_stats: list[tuple[float, float, float, int, chess.Move, float]]
-    best_move: chess.Move
-    board: chess.Board
+class MCTS_Result(Generic[GameStateT, MoveT]):
+    action_stats: list[tuple[float, float, float, int, MoveT, float]]
+    best_move: MoveT
+    state: GameStateT
+    # board: chess.Board
 
     @property
     def best_action(self) -> int:
-        return encode_move(self.board, self.best_move, 1 if self.board.turn == chess.WHITE else -1)
+        return self.state.encode_move(self.best_move)
 
     @property
     def best_move_str(self) -> str:
-        return self.board.san(self.best_move)
+        return self.state.move_repr(self.best_move)
 
     def __str__(self):
         return "\n".join(
             f"{pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
-            f" | ucb {ucb:.3f} | prior {prior:.2f} move {self.board.san(move)}{" <<<" if move == self.best_move else ""}"
+            f" | ucb {ucb:.3f} | prior {prior:.2f} move {self.state.move_repr(move)}{" <<<" if move == self.best_move else ""}"
             for pct_visits, avg_value, ucb, visits, move, prior in self.action_stats
         )
 
-class MCTS_Instance(object):
+class MCTS_Instance(Generic[GameStateT, MoveT]):
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory, **kwargs) -> None:
-        game: GameBase = kwargs['game']
+    def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory[GameStateT, MoveT], **kwargs) -> None:
+        assert isinstance(kwargs['game'], GameBase), "MCTS_Instance requires a 'game' argument of type GameBase"
+        self.game: GameBase[GameStateT] = kwargs['game']
 
-        print("game type:", type(game))
-        print("expected type:", ChessGame)
-
-        print("same class:", type(game) is ChessGame)
-
-        print("game module:", type(game).__module__)
-        print("expected module:", ChessGame.__module__)
-
-        print("game class ID:", id(type(game)))
-        print("expected class ID:", id(ChessGame))
-
-        assert isinstance(game, ChessGame), type(game)
-        self.game = game
-
-        player = game.current_player
+        player = self.game.current_player
         assert player == -1 or player == 1
 
-        self.chess_state = game.state.__copy__()
-        assert isinstance(self.chess_state, GameStateBase)
-
+        self.game_state = self.game.state.__copy__()
         self.model = kwargs.get('model', None)
 
         # Recover from a previous MCTS tree if possible, instead of starting from scratch.
         if kwargs.get('root', None) is not None:
-            self.root: Node = kwargs['root']
+            self.root: Node[GameStateT, MoveT] = kwargs['root']
             assert isinstance(self.root, Node)
             assert self.root.parent is None
-            assert self.root.parent_action is None
+            assert self.root.parent_move is None
         else:
             self.root = Node(None, None, player)
         self.rollouts = rollouts
@@ -129,7 +119,7 @@ class MCTS_Instance(object):
         # which maximises UCB score.
         curr = self.root
         while not curr.is_leafnode():
-            curr = curr.select(self.chess_state.board)
+            curr = curr.select(self.game_state)
 
         # (Now at a leaf node)
         # Expansion:
@@ -142,15 +132,15 @@ class MCTS_Instance(object):
         #   Evaluate leaf node in network to get its value.
         #   Then finally populate its children, since network also gets priors.
         if self.MCTS_factory.debug >= 2:
-            logging.debug(f"at node {curr.parent_action}")
+            logging.debug(f"at node {curr.parent_move}")
 
         if curr.value is not None:
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value}")
             return curr, SparseLegalPolicy.value_only(curr.value)
 
-        if curr.parent_action is not None:
-            reward, terminated = self.chess_state.get_value_and_terminated()
+        if curr.parent_move is not None:
+            reward, terminated = self.game_state.get_value_and_terminated()
             if terminated:
                 # reward describes the player who just moved;
                 # curr.player is that player's opponent.
@@ -160,8 +150,8 @@ class MCTS_Instance(object):
         return curr, AZ_NodeRequest(
             thread_id,
             curr.player,
-            self.chess_state.get_legal_actions(),
-            self.chess_state.encode_for_model(curr.player)
+            self.game_state.get_legal_actions(),
+            self.game_state.encode_for_model(curr.player)
         )
 
     def _search(self) -> None:
@@ -187,12 +177,12 @@ class MCTS_Instance(object):
                     ).unpack()[0]
 
                 node.expand(sparse_legal_policy)
-                node.backpropogate(1, sparse_legal_policy.value, False, self.chess_state.board)
+                node.backpropogate(1, sparse_legal_policy.value, False, self.game_state)
             else:
                 # Cached/terminal result; no request is sent.
-                node.backpropogate(1, request_or_response.value, True, self.chess_state.board)
+                node.backpropogate(1, request_or_response.value, True, self.game_state)
 
-    def search(self, board: chess.Board) -> MCTS_Result:
+    def search(self, state: GameStateT) -> MCTS_Result[GameStateT, MoveT]:
         self._search()
         children_details: list[tuple] = []
         assert self.root.legal_actions is not None
@@ -200,13 +190,13 @@ class MCTS_Instance(object):
 
         for idx, child in enumerate(self.root.children):
             if child is not None:
-                assert child.parent_action is not None
+                assert child.parent_move is not None
                 children_details.append((
                     child.visits / self.root.visits if self.rollouts else math.nan,
                     (-child.value_sum / child.visits) if child.visits else math.nan,
                     self.root.get_ucb(idx),
                     child.visits,
-                    child.parent_action,
+                    child.parent_move,
                     float(self.root.priors[idx])
                 ))
             else:
@@ -216,12 +206,13 @@ class MCTS_Instance(object):
                     math.nan,               # avg_value
                     self.root.get_ucb(idx), # ucb
                     0,                      # visits
-                    decode_action(board, int(self.root.legal_actions[idx]), self.root.player),
+                    state.decode_action(int(self.root.legal_actions[idx]), self.root.player),
                     float(self.root.priors[idx])                # prior_prob
                 ))
 
         best_action = max(children_details, key=lambda x: x[0])[4]
-        return MCTS_Result(children_details, best_action, self.chess_state.board.copy(stack=True))
+        return MCTS_Result(children_details, best_action, self.game_state)
+        # return MCTS_Result(children_details, best_action, self.game_state.board.copy(stack=True))
 
     # def search_concise(self) -> SparseLegalPolicy:
     #     self._search()
@@ -251,7 +242,7 @@ class MCTS_Instance(object):
             if not any(child is kept_child for child in self.root.children):
                 raise ValueError("kept_child must be a direct child of root")
             kept_child.parent = None
-            kept_child.parent_action = None
+            kept_child.parent_move = None
 
         pending = [self.root]
 
@@ -269,8 +260,8 @@ class MCTS_Instance(object):
         # Find the child node corresponding to the chosen action
         result = None
         for child in self.root.children:
-            if child is not None and child.parent_action is not None:
-                action_idx = encode_move(self.chess_state.board, child.parent_action, self.game.current_player)
+            if child is not None and child.parent_move is not None:
+                action_idx = encode_move(self.game_state.board, child.parent_move, self.game.current_player)
                 if action_idx == action:
                     result = child
                     break
@@ -279,9 +270,9 @@ class MCTS_Instance(object):
             raise ValueError(f"Chosen action {action} does not correspond to any child of the root.")
         return result
 
-class Node(object):
+class Node(Generic[GameStateT, MoveT]):
     __slots__ = ["parent",
-                 "parent_action",
+                 "parent_move",
                  "player",
                  "children",
                  "legal_actions",
@@ -291,21 +282,21 @@ class Node(object):
                  "value_sum",
                  "visits"]
     def __init__(self,
-                 parent: Node | None,
-                 parent_action: chess.Move | None,
+                 parent: Node[GameStateT, MoveT] | None,
+                 parent_move: MoveT | None,
                 #  prior_prob: float,
                  player: int) -> None:
         if parent is None:
-            assert parent_action is None
+            assert parent_move is None
         else:
-            assert parent_action is not None
+            assert parent_move is not None
 
         self.parent = parent                # Parent MCTS node
-        self.parent_action = parent_action  # Move made by parent node to get to here
+        self.parent_move = parent_move      # Move made by parent node to get to here
         self.player = player                # Player to move
 
         # Child MCTS nodes
-        self.children: list[Node | None]              = []
+        self.children: list[Node[GameStateT, MoveT] | None]  = []
         # Sparse array of legal actions
         self.legal_actions: NDArray[np.uint16] | None = None
         # Child priors corresponding to legal_actions
@@ -319,7 +310,7 @@ class Node(object):
     def is_leafnode(self) -> bool:
         return self.legal_actions is None
 
-    def select(self, board: chess.Board) -> Node:
+    def select(self, state: GameStateT) -> Node[GameStateT, MoveT]:
         """
         Side-effect: pushes the move of the best child onto the board.
         """
@@ -336,13 +327,13 @@ class Node(object):
         if best_child is None:
             best_child = Node(
                 parent=self,
-                parent_action=decode_action(board, int(self.legal_actions[best_child_index]), self.player),
+                parent_move=state.decode_action(int(self.legal_actions[best_child_index]), self.player),
                 player=-self.player
             )
             self.children[best_child_index] = best_child
 
-        assert best_child.parent_action is not None
-        board.push(best_child.parent_action)
+        assert best_child.parent_move is not None
+        state.push_to_board(best_child.parent_move)
         return best_child
 
     def get_ucb(self, index: int) -> float:
@@ -376,7 +367,7 @@ class Node(object):
         self.priors = sparse_policy.probs.copy()
         self.children = [None] * len(self.legal_actions)
 
-    def backpropogate(self, visits: int, total_value: float, terminal: bool, board: chess.Board) -> None:
+    def backpropogate(self, visits: int, total_value: float, terminal: bool, state: GameStateT) -> None:
         self.value_sum += total_value
         self.visits += visits
         if terminal:
@@ -387,8 +378,8 @@ class Node(object):
             else:
                 self.value = single_value
         if self.parent is not None:
-            assert board.pop() == self.parent_action, "Board state does not match parent action during backpropagation."
-            self.parent.backpropogate(visits, -1 * total_value, False, board)
+            assert state.pop_board() == self.parent_move, "Board state does not match parent action during backpropagation."
+            self.parent.backpropogate(visits, -1 * total_value, False, state)
 
     def print_children(self, depth: int=0, *, limit: int=1) -> None:
         if depth == 0:
@@ -404,7 +395,7 @@ class Node(object):
             avg_value = self.value_sum / (self.visits + 0.01)
             index = self.parent.children.index(self)
             ucb = self.parent.get_ucb(index)
-            move = self.parent_action
+            move = self.parent_move
 
             logging.debug(f"{'\t' * depth}"
                         f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
