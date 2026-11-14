@@ -2,6 +2,7 @@
 """Run with: pytest -q tests/alphazero/games/tictactoe_test.py"""
 
 import copy
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -9,8 +10,8 @@ import pytest
 from alphazero.games.TicTacToe import TicTacToeState, TicTacToeGame
 
 
-def make_state(board: list[list[int]]) -> TicTacToeState:
-    return TicTacToeState(np.array(board, dtype=np.int8))
+def make_state(board: list[list[int]], player_to_move: Literal[-1, 1]) -> TicTacToeState:
+    return TicTacToeState(np.array(board, dtype=np.int8), [], player_to_move)
 
 
 def test_initial_state():
@@ -28,7 +29,7 @@ def test_legal_actions():
         [ 1,  0, -1],
         [ 0,  1,  0],
         [-1,  0,  0],
-    ])
+    ], 1)
 
     expected = np.array([
         False, True,  False,
@@ -80,10 +81,10 @@ def test_invalid_action():
 
 def test_copy():
     state = make_state([
-        [ 1,  0,  0],
+        [ 1,  1,  0],
         [ 0, -1,  0],
         [ 0,  0,  0],
-    ])
+    ], -1)
 
     copied = copy.copy(state)
 
@@ -91,8 +92,8 @@ def test_copy():
     assert copied.board is not state.board
     np.testing.assert_array_equal(copied.board, state.board)
 
-    copied.get_next_state(1, 1, copy=False)
-    assert state.board[0, 1] == 0
+    copied.get_next_state(2, -1, copy=False)
+    assert state.board[0, 2] == 0
 
 
 def test_full_game_win_player1():
@@ -144,7 +145,7 @@ def test_model_encoding(player: int):
         [ 1,  0, -1],
         [ 0, -1,  1],
         [ 0,  0,  0],
-    ])
+    ], 1)
 
     original = state.board.copy()
     encoded = state.encode_for_model(player)
@@ -173,7 +174,7 @@ def test_compact_repr_roundtrip(player: int):
         [ 1,  0, -1],
         [ 0,  1,  0],
         [-1,  0,  0],
-    ])
+    ], 1)
 
     compact = state.to_compact_repr(player)
     restored = compact.unpack()

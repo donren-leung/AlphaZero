@@ -14,8 +14,8 @@ ROWS = 6
 COLS = 7
 
 
-def make_state(board) -> ConnectFourState:
-    return ConnectFourState(np.array(board, dtype=np.int8, copy=True))
+def make_state(board, player_to_move) -> ConnectFourState:
+    return ConnectFourState(np.array(board, dtype=np.int8, copy=True), [], player_to_move)
 
 
 def reference_result(board: np.ndarray) -> tuple[int, bool]:
@@ -199,7 +199,7 @@ def test_no_false_wins(player, cells):
     for row, col in cells:
         board[row, col] = player
 
-    state = ConnectFourState(board)
+    state = ConnectFourState(board, [], player)
     assert state.get_value_and_terminated() == (0, False)
 
 
@@ -215,7 +215,7 @@ DRAW_BOARD = np.array([
 
 
 def test_draw_position():
-    state = make_state(DRAW_BOARD)
+    state = make_state(DRAW_BOARD, 1)
 
     assert state.get_value_and_terminated() == (0, True)
     assert not state.get_legal_actions().any()
@@ -260,7 +260,7 @@ def test_model_encoding(player: int):
     board[-1, 1] = -1
     board[-2, 0] = 1
 
-    state = ConnectFourState(board.copy())
+    state = ConnectFourState(board, [], -1)
     encoded = state.encode_for_model(player)
     neutral = board * player
 
@@ -287,7 +287,7 @@ def test_compact_repr_roundtrip(player: int):
     board[-1, 1] = -1
     board[-2, 0] = 1
 
-    state = ConnectFourState(board)
+    state = ConnectFourState(board, [], -1)
 
     compact = state.to_compact_repr(player)
     restored = compact.unpack()
