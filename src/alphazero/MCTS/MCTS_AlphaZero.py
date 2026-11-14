@@ -51,8 +51,8 @@ class MCTS_Factory(Generic[GameStateT, MoveT]):
         self.temperature = temperature
         self.__class__.temperature = temperature
 
-    def make_instance(self, **kwargs) -> MCTS_Instance[GameStateT, MoveT]:
-        return MCTS_Instance(self.rollouts, MCTS_factory=self, **kwargs)
+    def make_instance(self, game: GameBase[GameStateT], **kwargs) -> MCTS_Instance[GameStateT, MoveT]:
+        return MCTS_Instance(game, self.rollouts, MCTS_factory=self, **kwargs)
 
 @dataclass(slots=True, frozen=True)
 class MCTS_Result(Generic[GameStateT, MoveT]):
@@ -78,9 +78,9 @@ class MCTS_Result(Generic[GameStateT, MoveT]):
 
 class MCTS_Instance(Generic[GameStateT, MoveT]):
     # Create a new MCTS from current state (player +1 us/-1 them)
-    def __init__(self, rollouts: int, *, MCTS_factory: MCTS_Factory[GameStateT, MoveT], **kwargs) -> None:
-        assert isinstance(kwargs['game'], GameBase), "MCTS_Instance requires a 'game' argument of type GameBase"
-        self.game: GameBase[GameStateT] = kwargs['game']
+    def __init__(self, game: GameBase[GameStateT], rollouts: int, *,
+                 MCTS_factory: MCTS_Factory[GameStateT, MoveT], **kwargs) -> None:
+        self.game = game
 
         player = self.game.current_player
         assert player == -1 or player == 1
@@ -261,7 +261,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         result = None
         for child in self.root.children:
             if child is not None and child.parent_move is not None:
-                action_idx = encode_move(self.game_state.board, child.parent_move, self.game.current_player)
+                action_idx = self.game_state.encode_move(child.parent_move)
                 if action_idx == action:
                     result = child
                     break

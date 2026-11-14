@@ -6,6 +6,7 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 import random
 from threading import Thread, Event
+from typing import Any, TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -22,8 +23,10 @@ from .MCTS.MCTS_AlphaZero import MCTS_Factory
 from .models.model import ResNet
 from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
+GameStateT = TypeVar("GameStateT", bound=GameStateBase)
+
 def self_play(
-         game_type: type[GameBase[GameStateBase]],
+         game_type: type[GameBase[GameStateT]],
          ROLLOUTS: int,
          PROCESSES: int,
          TARGET_GAME_WORKERS: int,
@@ -35,7 +38,7 @@ def self_play(
     print(f"Using GPU for node evaluation.")
     pool_factory = PoolFactory(GPU_AZ_Worker, model_args=model_args)
 
-    MCTS_factory = MCTS_Factory(ROLLOUTS)
+    MCTS_factory: MCTS_Factory[GameStateT, Any] = MCTS_Factory(ROLLOUTS)
 
     game_worker_ps: list[BaseProcess] = []
     eval_worker_ps: list[BaseProcess] = []

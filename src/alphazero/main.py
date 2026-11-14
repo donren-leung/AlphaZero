@@ -3,20 +3,24 @@ import json
 import logging
 import pathlib
 import sys
+from typing import Any, TypeVar
 
 import torch
 import numpy as np
 from numpy.typing import NDArray
 
-from .games.TicTacToe import TicTacToeGame
-from .games.ConnectFour import ConnectFourGame
+# from .games.TicTacToe import TicTacToeGame
+# from .games.ConnectFour import ConnectFourGame
 from .games.Chess import ChessGame
-from .games.ChessUtils import decode_action, encode_move
+
 from .games.GameBase import GameBase
+from .games.GameStateBase import GameStateBase
 # from .MCTS.MCTS_multichild import MCTS_Factory
 from .MCTS.MCTS_AlphaZero import MCTS_Factory
 from .models.model import ResNet
 from .utils import parse_game_type, game_types
+
+GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 
 # Return action -1 to quit
 def human_gamelogic(move_legalities: NDArray[np.bool_], game: GameBase) -> int:
@@ -41,10 +45,9 @@ def human_gamelogic(move_legalities: NDArray[np.bool_], game: GameBase) -> int:
         return action
 
 def main(args) -> None:
-    game: GameBase = args.game_type()
-    # game = ChessGame()
+    game: GameBase[Any] = args.game_type()
 
-    MCTS_factory: MCTS_Factory | None = None
+    MCTS_factory: MCTS_Factory[Any, Any] | None = None
     model: ResNet | None = None
 
     if not args.both_human:
