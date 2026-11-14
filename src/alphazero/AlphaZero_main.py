@@ -195,7 +195,7 @@ class AlphaZero:
 
     def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
         random.shuffle(memory)
-        for batchIdx in trange(0, len(memory), self.args.batch_size):
+        for batchIdx in trange(0, len(memory), self.args.batch_size, mininterval=10.0, desc="Training"):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
             states = [compact_repr.unpack() for compact_repr, _, _ in sample]
