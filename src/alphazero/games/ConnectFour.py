@@ -12,7 +12,7 @@ class ConnectFourState(GameStateNumpyBase):
     in_a_row: ClassVar[int] = 4
 
     __slots__ = ["row_count", "col_count"]
-    def __init__(self, state: State, action_history: list[int]=[], turn: Literal[1, -1] = 1):
+    def __init__(self, state: State, action_history: list[int], turn: Literal[1, -1]):
         super().__init__(state, action_history.copy(), turn)
         self.row_count = state.shape[0]
         self.col_count = state.shape[1]
@@ -113,7 +113,7 @@ class ConnectFourState(GameStateNumpyBase):
         return str(self.board)
 
     def __copy__(self) -> 'ConnectFourState':
-        return ConnectFourState(np.copy(self.board))
+        return ConnectFourState(np.copy(self.board), self.action_history.copy(), self.turn)
 
 class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
     row_count: ClassVar[int] = 6
@@ -126,7 +126,7 @@ class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
 
     @classmethod
     def get_initial_state(cls) -> ConnectFourState:
-        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
+        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8), [], 1)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions()

@@ -44,8 +44,8 @@ def parse_args() -> argparse.Namespace:
         "--processes",
         "-p",
         type=int,
-        default=4,
-        help="Number of node-evaluation worker processes (default: 4)",
+        default=1,
+        help="Number of node-evaluation worker processes (default: 1)",
     )
 
     parser.add_argument(
@@ -101,6 +101,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of epochs to train the model per iteration",
+    )
+
+    parser.add_argument(
+        "--blocks",
+        "-bl",
+        type=int,
+        default=9,
+        help="Number of residual blocks in the model (default: 9)",
+    )
+
+    parser.add_argument(
+        "--channels",
+        "-ch",
+        type=int,
+        default=256,
+        help="Number of channels in the model (default: 256)",
+    )
+
+    parser.add_argument(
+        "--head-channels",
+        "-hch",
+        type=int,
+        default=64,
+        help="Number of channels in the model heads (default: 64)",
     )
 
     parser.add_argument(

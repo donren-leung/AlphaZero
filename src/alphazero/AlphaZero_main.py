@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import multiprocessing as mp
 import json
 import re
@@ -205,20 +206,27 @@ class AlphaZero:
             policy_targets_tensor = torch.from_numpy(np.stack(policy_targets)).to("cuda").to(dtype=torch.float32)
             value_targets_tensor = torch.tensor(value_targets).reshape(-1, 1).to("cuda").to(dtype=torch.float32)
 
-            out_policy, out_value = self.model(state_tensor)
+            self.optimizer.zero_grad(set_to_none=True)
 
+            out_policy, out_value = self.model(state_tensor)
             policy_loss = F.cross_entropy(out_policy, policy_targets_tensor)
             value_loss = F.mse_loss(out_value, value_targets_tensor)
             loss = policy_loss + value_loss
 
-            self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
     def learn(self):
         for iteration in range(self.start_iteration, self.start_iteration + self.args.iter):
+            print_cuda_memory("Before cleanup")
+            self.optimizer.zero_grad(set_to_none=True)
             self.model.to("cpu")
             self.move_optimizer_state("cpu")
+
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+
+            print_cuda_memory("After cleanup")
 
             memory = self.self_play(
                 self.args.game_type,
@@ -246,6 +254,16 @@ class AlphaZero:
 
             del memory
 
+def print_cuda_memory(label: str):
+    if not torch.cuda.is_initialized():
+        print(f"{label}: CUDA not initialized")
+        return
+
+    allocated = torch.cuda.memory_allocated() / 1024**2
+    reserved = torch.cuda.memory_reserved() / 1024**2
+
+    print(f"{label}: allocated={allocated:.1f} MiB, reserved={reserved:.1f} MiB")
+
 def main():
     args = parse_args()
 
@@ -253,9 +271,9 @@ def main():
         "game_input_channels": args.game_type.input_channels,
         "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
         "game_action_size": args.game_type.action_size,
-        "num_resBlocks": 9,
-        "num_channels": 256,
-        "head_hidden_size": 64,
+        "num_resBlocks": args.blocks,
+        "num_channels": args.channels,
+        "head_hidden_size": args.head_channels,
         "batch_size": args.batch_size,
         "state_dict": None,
     }

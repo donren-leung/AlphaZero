@@ -10,7 +10,7 @@ type State = NDArray[np.int8]
 
 class TicTacToeState(GameStateNumpyBase):
     __slots__ = ["row_count", "col_count"]
-    def __init__(self, state: State, action_history: list[int]=[], turn: Literal[1, -1] = 1):
+    def __init__(self, state: State, action_history: list[int], turn: Literal[1, -1]):
         super().__init__(state, action_history.copy(), turn)
         self.row_count = state.shape[0]
         self.col_count = state.shape[1]
@@ -108,7 +108,7 @@ class TicTacToeState(GameStateNumpyBase):
         return str(self.board)
 
     def __copy__(self) -> 'TicTacToeState':
-        return TicTacToeState(np.copy(self.board))
+        return TicTacToeState(np.copy(self.board), self.action_history.copy(), self.turn)
 
 class TicTacToeGame(GameBaseNumpy[TicTacToeState]):
     row_count: ClassVar[int] = 3
@@ -120,7 +120,7 @@ class TicTacToeGame(GameBaseNumpy[TicTacToeState]):
 
     @classmethod
     def get_initial_state(cls) -> TicTacToeState:
-        return TicTacToeState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
+        return TicTacToeState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8), [], 1)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions()

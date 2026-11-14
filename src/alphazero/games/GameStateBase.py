@@ -74,13 +74,13 @@ class GameStateBase(Generic[MoveT], ABC):
 
 class GameStateNumpyBase(GameStateBase[int]):
     __slots__ = ["board", "action_history", "turn"]
-    def __init__(self, board: NumpyState, action_history: list[int]=[], turn: Literal[1, -1] = 1):
+    def __init__(self, board: NumpyState, action_history: list[int], turn: Literal[1, -1]):
         self.board = board
         self.action_history = action_history
         self.turn: Literal[1, -1] = turn
 
     def neutral_state(self, player: int) -> Self:
-        return self.__class__(self.board * player)
+        return self.__class__(self.board * player, self.action_history.copy(), self.turn)
 
     def switch_player(self) -> None:
         self.turn *= -1 # type: ignore
