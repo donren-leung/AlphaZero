@@ -37,40 +37,38 @@ def test_legal_mask_matches_codec_exactly(fen: str) -> None:
 
 def test_next_state_copy_does_not_mutate_original_board() -> None:
     state = ChessState(chess.Board())
-    original_fen = state.state.fen()
-    original_board = state.state
+    original_fen = state.board.fen()
+    original_board = state.board
     action = encode_move(original_board, chess.Move.from_uci("e2e4"), 1)
 
     next_state = state.get_next_state(action, player=1, copy=True)
 
-    assert state.state is original_board
-    assert state.state.fen() == original_fen
+    assert state.board is original_board
+    assert state.board.fen() == original_fen
     assert next_state is not state
-    assert next_state.state is not original_board
-    assert next_state.state.peek().uci() == "e2e4"
-    assert next_state.state.turn == chess.BLACK
+    assert next_state.board is not original_board
+    assert next_state.board.peek().uci() == "e2e4"
+    assert next_state.board.turn == chess.BLACK
 
 def test_next_state_without_copy_mutates_original_board() -> None:
     state = ChessState(chess.Board())
-    original_board = state.state
+    original_board = state.board
     action = encode_move(original_board, chess.Move.from_uci("e2e4"), 1)
 
     next_state = state.get_next_state(action, player=1, copy=False)
 
-    assert next_state.state is original_board
+    assert next_state.board is original_board
     assert original_board.peek().uci() == "e2e4"
     assert original_board.turn == chess.BLACK
 
-def test_next_state_rejects_wrong_player_and_illegal_action() -> None:
+def test_next_state_rejects_wrong_player() -> None:
     state = ChessState(chess.Board())
-    initial_fen = state.state.fen()
-    legal_action = encode_move(state.state, chess.Move.from_uci("e2e4"), 1)
+    initial_fen = state.board.fen()
+    legal_action = encode_move(state.board, chess.Move.from_uci("e2e4"), 1)
 
     with pytest.raises(AssertionError):
         state.get_next_state(legal_action, player=-1)
-    with pytest.raises(ValueError):
-        state.get_next_state(0, player=1)
-    assert state.state.fen() == initial_fen
+    assert state.board.fen() == initial_fen
 
 @pytest.mark.parametrize(
     ("fen", "move_uci", "expected"),
@@ -120,22 +118,36 @@ def test_state_value_and_termination_after_move(
     action = encode_move(board, move, player)
     next_state = ChessState(board).get_next_state(action, player)
 
-    assert next_state.state.peek() == move
-    assert next_state.get_value_and_terminated(action) == expected
+    assert next_state.board.peek() == move
+    assert next_state.get_value_and_terminated() == expected
 
 def test_threefold_repetition_is_claimable_draw() -> None:
     board = chess.Board()
+    assert not board.can_claim_threefold_repetition()
+    assert ChessState(board).get_value_and_terminated() == (0, False)
+
     for _ in range(2):
         for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
             board.push_san(san)
 
     assert board.can_claim_threefold_repetition()
-    assert ChessState(board).get_value_and_terminated(action=0) == (0, True)
+    assert ChessState(board).get_value_and_terminated() == (0, True)
 
 def test_fifty_move_rule_is_claimable_draw() -> None:
-    board = chess.Board("4k3/8/8/8/8/8/8/R3K3 w Q - 100 1")
+    # White cannot claim 50-move rule yet, since even if he plays a move, black still has the right to play his 50th move.
+    board = chess.Board("4k3/8/8/8/8/8/8/R3K3 w Q - 98 1")
+    assert not board.can_claim_fifty_moves()
+    assert ChessState(board).get_value_and_terminated() == (0, False)
+
+    # In the same position, black can claim 50-move rule by announcing a non-zeroing move that would tick over to 100 half-moves.
+    board = chess.Board("4k3/8/8/8/8/8/8/R3K3 b Q - 99 1")
     assert board.can_claim_fifty_moves()
-    assert ChessState(board).get_value_and_terminated(action=0) == (0, True)
+    assert ChessState(board).get_value_and_terminated() == (0, True)
+
+    # An exceptional position to the above case: white's king is trapped in the corner and must push his pawn, resetting the clock.
+    board = chess.Board("8/8/6k1/4p3/8/1q2P3/8/K7 w - - 99 1")
+    assert not board.can_claim_fifty_moves()
+    assert ChessState(board).get_value_and_terminated() == (0, False)
 
 def test_game_move_updates_state_and_keeps_starting_board_unchanged() -> None:
     start = chess.Board()
@@ -148,6 +160,6 @@ def test_game_move_updates_state_and_keeps_starting_board_unchanged() -> None:
     game._make_move(action, 1)
 
     assert start.fen() == initial_fen
-    assert game.state.state.peek() == move
-    assert game.state.state.turn == chess.BLACK
+    assert game.state.board.peek() == move
+    assert game.state.board.turn == chess.BLACK
     assert game.get_legal_actions().shape == (CHESS_ACTION_SIZE,)

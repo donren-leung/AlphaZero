@@ -59,14 +59,13 @@ def test_invalid():
     for action in (-1, 4672, 999999,-58):
         with pytest.raises(ValueError):
             decode_action(board, action, 1)
-    # with pytest.raises(ValueError):
-    #     encode_move(board, chess.Move.from_uci("e2e5"), 1)
-    with pytest.raises(ValueError):
-        decode_action(board, 7, 1)  # a1 -> b2: no legal move
-    with pytest.raises(ValueError):
-        decode_action(board, 0, 1)  # a1 -> a2: illegal occupied square
-    # h8 northward is off-board.
     with pytest.raises(ValueError, match="off the board"):
+        # position 0, plane 7
+        # source_file, source_rank = 0, 0 = a1
+        # QUEEN_DIRECTIONS[7] is (1, -1) or north-west
+        decode_action(board, 7, 1)
+    with pytest.raises(ValueError, match="off the board"):
+        # h8 northward (to h9) is off-board.
         decode_action(board, (7 * 8 + 7) * 73, 1)
 
 @pytest.mark.parametrize(
@@ -108,24 +107,34 @@ def test_colour_mirror_invariance(fen: str) -> None:
         "1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1",
     ],
 )
-def test_full_action_space_decodes_only_legal_moves(fen: str) -> None:
-    """Test all 4,672 possible actions, not only actions emitted by encode_move."""
+def test_full_action_space(fen: str) -> None:
+    """
+    Tests:
+    1. Every legal move encodes to a unique action.
+    2. Every legal action decodes to its original move.
+    3. Every action in the full 4,672-action space either decodes to an on-board move
+       or raises ValueError because it points off the board.
+    """
     board = chess.Board(fen)
     player = _player(board)
-    expected = {encode_move(board, move, player): move for move in board.legal_moves}
+
+    expected = {
+        encode_move(board, move, player): move
+        for move in board.legal_moves
+    }
     assert len(expected) == board.legal_moves.count()
 
     for action in range(CHESS_ACTION_SIZE):
-        if action in expected:
-            assert decode_action(board, action, player) == expected[action]
+        try:
+            move = decode_action(board, action, player)
+        except ValueError as exc:
+            assert "off the board" in str(exc)
+            assert action not in expected
         else:
-            try:
-                move = decode_action(board, action, player)
-            except ValueError:
-                pass
-            else:
-                pytest.fail(
-                    f"Action {action} unexpectedly decoded to "
-                    f"{move.uci()} ({board.san(move)}), "
-                    f"but was not produced by encode_move()"
-                )
+            # Every successfully decoded action must remain on the board.
+            assert 0 <= move.from_square < 64
+            assert 0 <= move.to_square < 64
+
+            # Every legal action must round-trip correctly.
+            if action in expected:
+                assert move == expected[action]

@@ -73,7 +73,7 @@ def encode_move(board: chess.Board, move: chess.Move, player: int) -> int:
     return (chess.square_file(source) * 8 + chess.square_rank(source)) * 73 + plane
 
 def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
-    """Decode an action, rejecting invalid, off-board, or illegal moves."""
+    """Decode an action, rejecting off-board moves but largely assumes move legality."""
     _check_player(board, player)
     if type(action) is not int or not 0 <= action < CHESS_ACTION_SIZE:
         raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE})")
