@@ -22,12 +22,12 @@ class GameWorker(Generic[GameStateT], object):
     each position, for each parallel game of specified game type.
     """
     metrics_interval_s = 0.5
-    MAX_WAIT_S = 5.0
+    MAX_WAIT_S = 20.0
     SMALL_BATCH_SIZE = 4
     MAX_WAIT_S_SMALL = 0.1
 
     MIN_BATCH_SIZE = 1
-    MAX_BATCH_SIZE = 256
+    MAX_BATCH_SIZE = 128
 
     def __init__(self, game_type: type[GameBase[GameStateT]], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],

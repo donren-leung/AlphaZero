@@ -27,65 +27,68 @@ class GPU_AZ_Worker(object):
         self.model.to(self.device)
         self.model.eval()
 
-        while True:
-            batch = self.inbox.get()
-            if batch is None:
-                break
-            response = self.gpu_compute(batch)
-            self.outboxes[batch.worker_id].put(AZ_NodeBatchResponse(batch.worker_id, response))
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            while True:
+                batch = self.inbox.get()
+                if batch is None:
+                    break
+                response = self.gpu_compute(batch)
+                self.outboxes[batch.worker_id].put(AZ_NodeBatchResponse(batch.worker_id, response))
 
     def gpu_compute(self, batch: AZ_NodeBatchRequest) -> BatchSparseLegalPolicy:
-        with torch.inference_mode():
-            K = batch.padded_legal_actions.shape[1]
+        K = batch.padded_legal_actions.shape[1]
 
-            # Transfer compact inputs to GPU.
-            # (B, C, H, W)
-            x = torch.as_tensor(batch.states, device=self.device, dtype=torch.float32)
-            # (B, K)
-            action_idx = torch.as_tensor(batch.padded_legal_actions, device=self.device, dtype=torch.int64)
+        # Transfer compact inputs to GPU.
+        # (B, C, H, W)
+        x = torch.as_tensor(batch.states, device=self.device, dtype=torch.float32)
+        # (B, K)
+        action_idx = torch.as_tensor(batch.padded_legal_actions, device=self.device, dtype=torch.int64)
+        # (B,)
+        lengths_gpu = torch.as_tensor(batch.lengths, device=self.device, dtype=torch.int32)
+
+        # Evaluate.
+        # policy is (B, A) where A is e.g. 64*73=4672 and values is (B,)
+        policy_logits, values = self.model(x)
+
+        # assert torch.isfinite(policy_logits).all()
+        # assert torch.isfinite(values).all()
+
+        # Gather only legal-action logits via broadcasting -> (B, K)
+        valid = (
+            # (,K)
+            torch.arange(K, device=self.device)[None, :]
             # (B,)
-            lengths_gpu = torch.as_tensor(batch.lengths, device=self.device, dtype=torch.int32)
+            < lengths_gpu[:, None]
+        )
 
-            # Evaluate.
-            # policy is (B, A) where A is e.g. 64*73=4672 and values is (B,)
-            policy_logits, values = self.model(x)
+        # Gather dim=1: along action dimension, for each batch row -> (B, K)
+        masked_logits = policy_logits.gather(1, action_idx).float().masked_fill(~valid, -torch.inf)
 
-            # Gather only legal-action logits via broadcasting -> (B, K)
-            valid = (
-                # (,K)
-                torch.arange(K, device=self.device)[None, :]
-                # (B,)
-                < lengths_gpu[:, None]
-            )
+        # Avoid NaNs for positions with zero legal moves.
+        safe_logits = torch.where(
+            lengths_gpu[:, None] > 0,
+            masked_logits,
+            torch.zeros_like(masked_logits),
+        )
 
-            # Gather dim=1: along action dimension, for each batch row -> (B, K)
-            masked_logits = policy_logits.gather(1, action_idx).float().masked_fill(~valid, -torch.inf)
+        probs = torch.softmax(safe_logits, dim=1)
+        # probs = probs.masked_fill(~valid, 0.0) Not necessary if CPU filters out padding.
 
-            # Avoid NaNs for positions with zero legal moves.
-            safe_logits = torch.where(
-                lengths_gpu[:, None] > 0,
-                masked_logits,
-                torch.zeros_like(masked_logits),
-            )
+        # Transfer fixed-shape outputs to CPU.
+        # This synchronizes so that the arrays are ready.
+        probs_cpu = probs.cpu().numpy()
+        values_cpu = values.float().reshape(-1).cpu().numpy()
 
-            probs = torch.softmax(safe_logits, dim=1)
-            # probs = probs.masked_fill(~valid, 0.0) Not necessary if CPU filters out padding.
+        # Remove padding on CPU.
+        valid_cpu = np.arange(K)[None, :] < batch.lengths[:, None]
 
-            # Transfer fixed-shape outputs to CPU.
-            # This synchronizes so that the arrays are ready.
-            probs_cpu = probs.cpu().numpy()
-            values_cpu = values.float().reshape(-1).cpu().numpy()
-
-            # Remove padding on CPU.
-            valid_cpu = np.arange(K)[None, :] < batch.lengths[:, None]
-
-            return BatchSparseLegalPolicy(
-                thread_idxs=batch.thread_idxs,
-                lengths=batch.lengths,
-                legal_actions=batch.padded_legal_actions[valid_cpu],
-                probs=probs_cpu[valid_cpu],
-                values=values_cpu,
-            )
+        return BatchSparseLegalPolicy(
+            thread_idxs=batch.thread_idxs,
+            lengths=batch.lengths,
+            legal_actions=batch.padded_legal_actions[valid_cpu],
+            probs=probs_cpu[valid_cpu],
+            values=values_cpu,
+        )
 
 class PoolFactory(object):
     def __init__(self,
