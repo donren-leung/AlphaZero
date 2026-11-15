@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 import chess
 import numpy as np

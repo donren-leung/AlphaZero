@@ -7,8 +7,6 @@ from typing import Generic, TypeVar
 import numpy as np
 from numpy.typing import NDArray
 
-import chess
-
 from alphazero.batching.NodeBatch import BatchSparseLegalPolicy, SparseLegalPolicy, AZ_NodeRequest
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
