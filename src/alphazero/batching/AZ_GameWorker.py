@@ -22,7 +22,9 @@ class GameWorker(Generic[GameStateT], object):
     each position, for each parallel game of specified game type.
     """
     metrics_interval_s = 0.5
-    MAX_WAIT_S = 1.0
+    MAX_WAIT_S = 5.0
+    SMALL_BATCH_SIZE = 4
+    MAX_WAIT_S_SMALL = 0.1
 
     MIN_BATCH_SIZE = 1
     MAX_BATCH_SIZE = 256
@@ -111,7 +113,7 @@ class GameWorker(Generic[GameStateT], object):
     def calculate_batch_size(self) -> int:
         if self.active_games <= 0:
             return 0
-        elif self.active_games <= 4:
+        elif self.active_games <= self.SMALL_BATCH_SIZE:
             return 1
 
         # 1/4 of active games, rounded down to nearest power of 2
@@ -138,7 +140,10 @@ class GameWorker(Generic[GameStateT], object):
             # Drain the staging queue for more requests to batch together.
             target_batch_size = max(1, self.calculate_batch_size())
             while len(requests) < target_batch_size:
-                remaining = self.MAX_WAIT_S - (time.perf_counter() - first_request_time)
+                if target_batch_size <= self.SMALL_BATCH_SIZE:
+                    remaining = self.MAX_WAIT_S_SMALL - (time.perf_counter() - first_request_time)
+                else:
+                    remaining = self.MAX_WAIT_S - (time.perf_counter() - first_request_time)
                 if remaining <= 0:
                     break
 
