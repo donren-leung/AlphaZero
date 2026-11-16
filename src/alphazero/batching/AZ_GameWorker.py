@@ -27,7 +27,7 @@ class GameWorker(Generic[GameStateT], object):
     MAX_WAIT_S_SMALL = 0.1
 
     MIN_BATCH_SIZE = 1
-    MAX_BATCH_SIZE = 128
+    MAX_BATCH_SIZE = 256
 
     def __init__(self, game_type: type[GameBase[GameStateT]], *,
                  num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
@@ -167,14 +167,15 @@ class GameWorker(Generic[GameStateT], object):
     def metrics_d(self) -> None:
         while True:
             time.sleep(self.metrics_interval_s)
-            self.metrics_queue.put(
-                (self.worker_id,
-                 self.total_moves,
-                 self.sent_batches,
-                 self.sent_requests,
-                 self.received_batches,
-                 self.received_results)
-            )
+            with self.metrics_lock:
+                self.metrics_queue.put(
+                    (self.worker_id,
+                    self.total_moves,
+                    self.sent_batches,
+                    self.sent_requests,
+                    self.received_batches,
+                    self.received_results)
+                )
 
     # TODO: might migrate to MCTS
     def search_move(self,

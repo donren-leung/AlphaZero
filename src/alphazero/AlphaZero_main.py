@@ -52,17 +52,19 @@ def self_play(
                                                     for _ in range(TARGET_GAME_WORKERS)]
 
     # Cumulative moves
-    worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
+    worker_metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]] = []
     # Batch total, batches
-    eval_metrics_queue: mpQueueGen[tuple[int, int]] = mpQueueGen(ctx)
+    eval_metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]] = mpQueueGen(ctx)
 
     for i in range(PROCESSES):
-        eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues)
+        eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues, eval_metrics_queue)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
         eval_worker_ps.append(p)
 
     for i, results_queue in enumerate(results_queues):
+        worker_metrics_queue = mpQueueGen(ctx)
+        worker_metrics_queues.append(worker_metrics_queue)
         game_worker = GameWorker(game_type,
                                  num_games=GAME_WORKER_GAMES,
                                  output_games=all_game_results,
@@ -81,7 +83,7 @@ def self_play(
     metrics_stop_event = Event()
     counter = ThreadSafeCounter()
     expecting_results = TARGET_GAME_WORKERS * GAME_WORKER_GAMES
-    metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queue, counter, expecting_results), daemon=True)
+    metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queues, eval_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
     memory: list[tuple[CompactRepr, SparseLegalPolicy, int]] = []
