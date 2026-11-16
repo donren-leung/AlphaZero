@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import math
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -161,7 +161,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
 
             if isinstance(request_or_response, AZ_NodeRequest):
                 self.model.eval()
-                with torch.no_grad():
+                with torch.inference_mode():
                     x = torch.as_tensor(request_or_response.state, device="cuda", dtype=torch.float32).unsqueeze(0)
                     legal_masks = torch.as_tensor(request_or_response.legal_mask, device="cuda", dtype=torch.bool).unsqueeze(0)
 
@@ -196,7 +196,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
                     self.root.get_ucb(idx, expl_sqrt_visits),
                     child.visits,
                     child.parent_move,
-                    float(self.root.priors[idx])
+                    self.root.priors[idx]
                 ))
             else:
                 # Unexpanded child
@@ -206,7 +206,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
                     self.root.get_ucb(idx, expl_sqrt_visits), # ucb
                     0,                      # visits
                     state.decode_action(int(self.root.legal_actions[idx]), self.root.player),
-                    float(self.root.priors[idx])                # prior_prob
+                    self.root.priors[idx]   # prior_prob
                 ))
 
         best_action = max(children_details, key=lambda x: x[0])[4]
@@ -300,7 +300,7 @@ class Node(Generic[GameStateT, MoveT]):
         # Sparse array of legal actions
         self.legal_actions: NDArray[np.uint16] | None = None
         # Child priors corresponding to legal_actions
-        self.priors: NDArray[np.float32] | None       = None
+        self.priors: list[float] | None               = None
 
         # If terminal node, assign value on first simulation and return it
         self.value: float | None                      = None
@@ -352,7 +352,7 @@ class Node(Generic[GameStateT, MoveT]):
         )
         u = (
             expl_sqrt_visits
-            * float(self.priors[index])
+            * self.priors[index]
             / (1 + visits)
         )
 
@@ -361,13 +361,15 @@ class Node(Generic[GameStateT, MoveT]):
     def expand(self, sparse_policy: SparseLegalPolicy) -> None:
         assert self.legal_actions is None
         assert self.priors is None
-        assert np.all(
-            (sparse_policy.probs >= 0.0)
-            & (sparse_policy.probs <= 1.0)
-        ), "Sparse policy probabilities must be in range [0, 1]"
+        assert sparse_policy.probs.ndim == 1
+        # assertion now done in NodeBatch.py when unpacking the sparse policy
+        # assert np.all(
+        #     (sparse_policy.probs >= 0.0)
+        #     & (sparse_policy.probs <= 1.0)
+        # ), "Sparse policy probabilities must be in range [0, 1]"
 
         self.legal_actions = sparse_policy.legal_actions.copy()
-        self.priors = sparse_policy.probs.copy()
+        self.priors = cast(list[float], sparse_policy.probs.tolist())
         self.children = [None] * len(self.legal_actions)
 
     def backpropogate(self, visits: int, total_value: float, terminal: bool, state: GameStateT) -> None:

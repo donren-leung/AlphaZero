@@ -134,29 +134,25 @@ def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> 
 
     # Time step planes
     features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
-    history = board.copy(stack=TIME_STEPS - 1)
+    historic_board = board.copy(stack=TIME_STEPS - 1)
     for ply in range(TIME_STEPS):
-        for square, piece in history.piece_map().items():
-            oriented = square if is_white else chess.square_mirror(square)
-            side = 0 if piece.color == is_white else CHESS_PIECE_LAYERS
-            plane = ply * TIME_STEP_LAYERS + side + piece.piece_type - 1
-            features[plane, chess.square_rank(oriented),
-                     chess.square_file(oriented)] = 1
+        start = ply * TIME_STEP_LAYERS
+        features[start:start + 12] = piece_planes(historic_board, is_white)
 
         if repetitions is not None:
             assert ply < len(repetitions), "Repetition history is shorter than the number of halfmoves"
             r2 = repetitions[ply] >= 2
             r3 = repetitions[ply] >= 3
         else:
-            r2 = history.is_repetition(2)
-            r3 = history.is_repetition(3)
+            r2 = historic_board.is_repetition(2)
+            r3 = historic_board.is_repetition(3)
 
         features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START, :, :] = r2
         features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START + 1, :, :] = r3
 
-        if not history.move_stack:
+        if not historic_board.move_stack:
             break
-        history.pop()
+        historic_board.pop()
 
     # Auxiliary planes
     for plane, color, kingside in (
@@ -174,3 +170,31 @@ def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> 
     features[AUXILIARY_PLANE_START + 5, :, :] = board.halfmove_clock
 
     return features
+
+def piece_planes(board: chess.Board, perspective_white: bool) -> np.ndarray:
+    # Planes 1-6:  perspective player's pieces.
+    # Planes 7-12: opponent's pieces.
+    colors = (
+        (chess.WHITE, chess.BLACK)
+        if perspective_white
+        else (chess.BLACK, chess.WHITE)
+    )
+
+    masks = np.array(
+        [
+            board.pieces_mask(piece_type, color)
+            for color in colors
+            for piece_type in range(1, 7)
+        ],
+        dtype="<u8",
+    )
+
+    # Bit 0 is a1; reshape into [plane, rank, file].
+    planes = np.unpackbits(
+        masks.view(np.uint8).reshape(12, 8),
+        axis=1,
+        bitorder="little",
+    ).reshape(12, 8, 8)
+
+    # Mirror vertically if Black.
+    return planes if perspective_white else planes[:, ::-1, :]

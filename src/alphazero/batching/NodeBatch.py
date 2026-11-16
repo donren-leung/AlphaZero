@@ -72,6 +72,7 @@ class BatchSparseLegalPolicy:
             # Drop the batch axis. We extract the indices of legal actions.
             legal_actions = torch.nonzero(legal_masks)[:, 1]
             sparse_probs = probs[legal_masks]
+            assert torch.all((sparse_probs >= 0.0) & (sparse_probs <= 1.0)), "Sparse policy probabilities must be in range [0, 1]"
 
             # Transfer only sparse data to CPU.
             lengths_np = lengths.cpu().numpy().astype(np.uint16)
