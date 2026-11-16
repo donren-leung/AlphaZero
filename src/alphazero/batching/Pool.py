@@ -1,5 +1,6 @@
+from multiprocessing.connection import Connection, wait
 import time
-from typing import Any, Callable, Counter
+from typing import Any, Callable, Counter, cast
 
 import torch
 import numpy as np
@@ -13,11 +14,11 @@ class GPU_AZ_Worker(object):
     METRICS_INTERVAL_S = 0.5
 
     def __init__(self,
-                 inbox: mpQueueGen[AZ_NodeBatchRequest | None],
+                 inboxes: list[mpQueueGen[AZ_NodeBatchRequest | None]],
                  outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
                  metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]],
                  model_args: dict):
-        self.inbox = inbox
+        self.inboxes = inboxes
         self.outboxes = outboxes
         self.metrics_queue = metrics_queue
 
@@ -31,23 +32,40 @@ class GPU_AZ_Worker(object):
         self.model.eval()
         self.compiled_model: Callable[..., Any] = torch.compile(self.model, mode="reduce-overhead")
 
-        window_start = time.perf_counter()
+        torch.set_num_threads(1)
+        print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
+
+        reader_to_worker = {
+            inbox._reader(): worker_id
+            for worker_id, inbox in enumerate(self.inboxes)
+        }
+
         # Each row: (receive seconds, compute seconds, submit seconds)
         timings = []
         batch_sizes: Counter[int] = Counter()
         nodes = 0
 
-        torch.set_num_threads(1)
-        print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
-
+        window_start = time.perf_counter()
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            while True:
+            while reader_to_worker:
                 t0 = time.perf_counter()
-                batch = self.inbox.get()
+
+                # Wait for any producer.
+                ready = wait(reader_to_worker)
+                reader = cast(Connection, ready[0])
+                worker_id = reader_to_worker.pop(reader)
+
+                batch = self.inboxes[worker_id].get()
                 t1 = time.perf_counter()
 
                 if batch is None:
-                    break
+                    # Producer terminated normally.
+                    continue
+
+                # Reinsert at end for fairer scheduling.
+                reader_to_worker[reader] = worker_id
+
+                assert batch.worker_id == worker_id
 
                 response = self.gpu_compute(batch)
                 t2 = time.perf_counter()
@@ -73,6 +91,14 @@ class GPU_AZ_Worker(object):
                     batch_sizes.clear()
                     nodes = 0
                     window_start = time.perf_counter()
+
+        # Flush remaining metrics.
+        if nodes:
+            self.metrics_queue.put((
+                nodes,
+                timings,
+                dict(batch_sizes),
+            ))
 
     def gpu_compute(self, batch: AZ_NodeBatchRequest) -> BatchSparseLegalPolicy:
         K = batch.padded_legal_actions.shape[1]
@@ -141,9 +167,9 @@ class PoolFactory(object):
             raise ValueError("GPUPool requires a model args dictionary to be provided.")
 
     def create_AZ_GPU_worker(self,
-                            inbox: mpQueueGen[AZ_NodeBatchRequest | None],
+                            inboxes: list[mpQueueGen[AZ_NodeBatchRequest | None]],
                             outboxes: list[mpQueueGen[AZ_NodeBatchResponse]],
                             metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]]) -> GPU_AZ_Worker:
         assert self.pool_type in [GPU_AZ_Worker]
         assert self.model_args is not None
-        return GPU_AZ_Worker(inbox, outboxes, metrics_queue, self.model_args,)
+        return GPU_AZ_Worker(inboxes, outboxes, metrics_queue, self.model_args,)

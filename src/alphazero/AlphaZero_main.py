@@ -45,11 +45,15 @@ def self_play(
     eval_worker_ps: list[BaseProcess] = []
     all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
 
-    # 1 queue for ALL game_workers --- sending to ---> ALL eval_workers
-    request_queue: mpQueueGen[AZ_NodeBatchRequest | None] = mpQueueGen(ctx)
+    # N queues for each game_worker --- sending to ---> ALL eval_workers
+    request_queues: list[mpQueueGen[AZ_NodeBatchRequest | None]] = [
+        mpQueueGen(ctx) for _ in range(TARGET_GAME_WORKERS)
+    ]
+
     # N queues for ALL eval_workers --- sending to ---> N * game_workers queues
-    results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [mpQueueGen(ctx)
-                                                    for _ in range(TARGET_GAME_WORKERS)]
+    results_queues: list[mpQueueGen[AZ_NodeBatchResponse]] = [
+        mpQueueGen(ctx) for _ in range(TARGET_GAME_WORKERS)
+    ]
 
     # Cumulative moves
     worker_metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]] = []
@@ -57,7 +61,7 @@ def self_play(
     eval_metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]] = mpQueueGen(ctx)
 
     for i in range(PROCESSES):
-        eval_worker = pool_factory.create_AZ_GPU_worker(request_queue, results_queues, eval_metrics_queue)
+        eval_worker = pool_factory.create_AZ_GPU_worker(request_queues, results_queues, eval_metrics_queue)
         p = ctx.Process(target=eval_worker.run, name=f"EvalWorker_{i}", daemon=True)
         p.start()
         eval_worker_ps.append(p)
@@ -69,7 +73,7 @@ def self_play(
                                  num_games=GAME_WORKER_GAMES,
                                  output_games=all_game_results,
                                  in_queue=results_queue,
-                                 out_queue=request_queue,
+                                 out_queue=request_queues[i],
                                  metrics_queue=worker_metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory)
@@ -92,11 +96,9 @@ def self_play(
         counter.increment()
         memory.extend(zip(game.history['states'], game.history['MCTS_results'], game.history['outcome'], strict=True))
 
-    for game_worker_p in game_worker_ps:
+    for i, game_worker_p in enumerate(game_worker_ps):
         game_worker_p.join()
-
-    for _ in eval_worker_ps:
-        request_queue.put(None)
+        request_queues[i].put(None)
 
     for eval_worker_p in eval_worker_ps:
         eval_worker_p.join()
@@ -197,7 +199,7 @@ class AlphaZero:
 
     def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
         random.shuffle(memory)
-        for batchIdx in trange(0, len(memory), self.args.batch_size, mininterval=10.0, desc="Training"):
+        for batchIdx in trange(0, len(memory), self.args.batch_size, mininterval=2.5, desc="Training"):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
             states = [compact_repr.unpack() for compact_repr, _, _ in sample]

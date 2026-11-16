@@ -1,5 +1,6 @@
+from multiprocessing.connection import Connection
 from multiprocessing.context import BaseContext
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, cast
 
 T = TypeVar("T")
 
@@ -30,3 +31,6 @@ class mpQueueGen(Generic[T]):
 
     def empty(self):
         return self._queue.empty()
+
+    def _reader(self) -> Connection:
+        return cast(Connection, getattr(self._queue, "_reader"))
