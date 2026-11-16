@@ -3,11 +3,11 @@ import time
 
 from queue import Queue, Empty
 from threading import Thread, Lock, Condition
-from typing import Generic, Self, TypeVar, Type
+from typing import Generic, Self, TypeVar, Type, cast
 
 import numpy as np
 
-from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeRequest, AZ_NodeBatchResponse, SparseLegalPolicy
+from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeRequest, AZ_NodeBatchResponse, BatchSparseLegalPolicy, SparseLegalPolicy
 from .Queues import mpQueueGen
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
@@ -50,9 +50,11 @@ class GameWorker(Generic[GameStateT], object):
         self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
 
         # Consider below zipped by thread index
-        self.thread_inbox:  list[SparseLegalPolicy | None]        = []
-        self.threads:       list[Thread]                          = []
-        self.inbox_cv:      list[Condition]                       = []
+        self.thread_inbox:  list[tuple[
+            BatchSparseLegalPolicy, int, int, int] | None
+        ]                                                   = []
+        self.threads:       list[Thread]                    = []
+        self.inbox_cv:      list[Condition]                 = []
 
         # Metrics
         self.total_moves = 0
@@ -95,20 +97,30 @@ class GameWorker(Generic[GameStateT], object):
             # Blocking call to get a BatchResponse from the MP queue.
             batch_response = self.in_queue.get()
             assert batch_response.worker_id == self.worker_id
-            for thread_id, result in batch_response.unpack():
-                assert thread_id >= 0 and thread_id < len(self.threads)
-                assert self.thread_inbox[thread_id] is None
 
+            batch = batch_response.batch_sparse_legal_policy
+            offset = 0
+            for row, (thread_idx, length) in enumerate(zip(
+                cast(list[int], batch.thread_idxs.tolist()),
+                cast(list[int], batch.lengths.tolist()),
+                strict=True,
+            )):
+                end = offset + length
                 # Open (with mutex) the right thread's mailbox, insert the
                 # received BatchResponse and notify the waiting thread.
-                self.inbox_cv[thread_id].acquire()
-                self.thread_inbox[thread_id] = result
-                self.inbox_cv[thread_id].notify()
-                self.inbox_cv[thread_id].release()
+                self.inbox_cv[thread_idx].acquire()
+                assert self.thread_inbox[thread_idx] is None
+                self.thread_inbox[thread_idx] = (batch, offset, end, row)
+                self.inbox_cv[thread_idx].notify()
+                self.inbox_cv[thread_idx].release()
+
+                offset = end
 
             with self.metrics_lock:
                 self.received_batches += 1
                 self.received_results += len(batch_response)
+
+            del batch, batch_response
 
     def calculate_batch_size(self) -> int:
         if self.active_games <= 0:
@@ -184,7 +196,7 @@ class GameWorker(Generic[GameStateT], object):
                     initial_root: Node | None):
         MCTS_instance = self.MCTS_factory.make_instance(game=game, root=initial_root)
         try:
-            while MCTS_instance.root.visits <= MCTS_instance.num_rollouts(fast=initial_root is not None):
+            while MCTS_instance.root.visits <= MCTS_instance.num_rollouts(initial_root is not None):
                 # While not enough rollouts:
                 logging.debug(f"thread {thread_id} {MCTS_instance.root.visits} visits, not enough")
                 # Make next batch
@@ -200,33 +212,41 @@ class GameWorker(Generic[GameStateT], object):
                     # NOTE: Is this while loop strictly needed??
                     while self.thread_inbox[thread_id] is None:
                         self.inbox_cv[thread_id].wait()
-                    eval_sparse_result = self.thread_inbox[thread_id]
+                    delivery = self.thread_inbox[thread_id]
                     self.thread_inbox[thread_id] = None
                     self.inbox_cv[thread_id].release()
-                    assert eval_sparse_result is not None
+
+                    assert delivery is not None
+                    batch, start, end, row = delivery
+
+                    legal_actions = batch.legal_actions[start:end]
+                    probs = batch.probs[start:end]
+                    value = float(batch.values[row])
 
                     # Introduce Dirichlet noise to root node for exploration
                     # but only if in full search mode (want to maximise strength in fast)
                     if node is MCTS_instance.root and initial_root is None:
-                        num_legal = len(eval_sparse_result.legal_actions)
+                        num_legal = legal_actions.shape[0]
                         alpha = self.MCTS_factory.DIRICHLET_CONST / num_legal
                         noise = np.random.dirichlet(np.full(num_legal, alpha)).astype(np.float32)
 
-                        eval_sparse_result.probs = (
-                            (1.0 - self.MCTS_factory.dirichlet_epsilon) * eval_sparse_result.probs
+                        probs = (
+                            (1.0 - self.MCTS_factory.dirichlet_epsilon) * probs
                             + self.MCTS_factory.dirichlet_epsilon * noise
                         ).astype(np.float32, copy=False)
 
                     # Update prior probability from the neural network output
-                    node.expand(eval_sparse_result)
-                    node.backpropogate(1, eval_sparse_result.value, False, MCTS_instance.game_state)
+                    node.expand(legal_actions, probs)
+                    node.backpropogate(1, value, False, MCTS_instance.game_state)
+
+                    del delivery, batch, legal_actions, probs
                 else:
                     # Cached result; no request is sent.
                     logging.debug(f"thread {thread_id} (cached) batchresponse")
                     node.backpropogate(1, request_or_response.value, True, MCTS_instance.game_state)
 
-                if self.MCTS_factory.debug > 0:
-                    MCTS_instance.root.print_children(0, limit=2)
+                # if self.MCTS_factory.debug > 0:
+                #     MCTS_instance.root.print_children(0, limit=2)
 
             # Make move
             root = MCTS_instance.root
@@ -301,6 +321,15 @@ class GameWorker(Generic[GameStateT], object):
                     outcome = value if hist_player == last_player else -value
                     game.history['outcome'].append(outcome)
 
+                to_clear = [initial_root]
+                while to_clear:
+                    node = to_clear.pop()
+                    if node is not None:
+                        to_clear.extend((child for child in node.children if child is not None))
+                        node.children.clear()
+                        node.parent = None
+
+                del MCTS_instance
                 break
 
             del MCTS_instance

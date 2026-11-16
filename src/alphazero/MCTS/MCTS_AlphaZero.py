@@ -4,6 +4,7 @@ import logging
 import math
 from typing import Generic, TypeVar, cast
 
+from numba import njit
 import numpy as np
 from numpy.typing import NDArray
 
@@ -92,8 +93,9 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             assert isinstance(self.root, Node)
             assert self.root.parent is None
             assert self.root.parent_move is None
+            assert self.root.parent_index is None
         else:
-            self.root = Node(None, None, player, MCTS_factory=MCTS_factory)
+            self.root = Node(None, None, None, player, MCTS_factory=MCTS_factory)
         self.rollouts = rollouts
         self.MCTS_factory = MCTS_factory
 
@@ -174,7 +176,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
                         thread_idxs=np.array([0])
                     ).unpack()[0]
 
-                node.expand(sparse_legal_policy)
+                node.expand(sparse_legal_policy.legal_actions, sparse_legal_policy.probs)
                 node.backpropogate(1, sparse_legal_policy.value, False, self.game_state)
             else:
                 # Cached/terminal result; no request is sent.
@@ -240,7 +242,9 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         if kept_child is not None:
             if not any(child is kept_child for child in self.root.children):
                 raise ValueError("kept_child must be a direct child of root")
+            kept_child._root_stats = RootStats(kept_child.visits, kept_child.value_sum)
             kept_child.parent = None
+            kept_child.parent_index = None
             kept_child.parent_move = None
 
         pending = [self.root]
@@ -269,45 +273,67 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             raise ValueError(f"Chosen action {action} does not correspond to any child of the root.")
         return result
 
+@dataclass(slots=True)
+class RootStats:
+    visits: int = 0
+    value_sum: float = 0.0
+
 class Node(Generic[GameStateT, MoveT]):
-    __slots__ = ["parent",
-                 "parent_move",
-                 "player",
-                 "children",
-                 "legal_actions",
-                 "priors",
-                 "value",
-                 "value_sum",
-                 "visits",
-                 "MCTS_factory"
-                 ]
+    __slots__ = [
+        "parent", "parent_index", "parent_move",
+        "player", "children", "legal_actions",
+        "priors", "child_visits", "child_value_sum",
+        "value", "_root_stats", "MCTS_factory"
+    ]
     def __init__(self,
                  parent: Node[GameStateT, MoveT] | None,
                  parent_move: MoveT | None,
+                 parent_index: int | None,
                  player: int,
                  MCTS_factory: MCTS_Factory) -> None:
-        if parent is None:
-            assert parent_move is None
-        else:
-            assert parent_move is not None
+        assert (parent is None) == (parent_move is None)
+        assert (parent is None) == (parent_index is None)
 
         self.parent = parent                # Parent MCTS node
+        self.parent_index = parent_index    # Index of node's parent's child-list
         self.parent_move = parent_move      # Move made by parent node to get to here
         self.player = player                # Player to move
+        self.MCTS_factory = MCTS_factory
 
         # Child MCTS nodes
         self.children: list[Node[GameStateT, MoveT] | None]  = []
-        # Sparse array of legal actions
-        self.legal_actions: NDArray[np.uint16] | None = None
+        # Sparse array of legal actions. Using numpy arrays for more compact storage.
+        self.legal_actions:   NDArray[np.uint16] | None      = None
         # Child priors corresponding to legal_actions
-        self.priors: list[float] | None               = None
+        self.priors:          NDArray[np.float32] | None     = None
+
+        self.child_visits:    NDArray[np.uint32] | None      = None
+        # Keeps it in PoV of child
+        self.child_value_sum: NDArray[np.float32] | None     = None
 
         # If terminal node, assign value on first simulation and return it
-        self.value: float | None                      = None
-        self.value_sum: float                         = 0
-        self.visits: int                              = 0
+        self.value:           float | None                   = None
+        # Only the root owns standalone statistics.
+        self._root_stats = RootStats() if parent is None else None
 
-        self.MCTS_factory = MCTS_factory
+    @property
+    def visits(self) -> int:
+        if self.parent is None:
+            assert self._root_stats is not None
+            return self._root_stats.visits
+        assert self.parent_index is not None
+        assert self.parent.child_visits is not None
+        return int(self.parent.child_visits[self.parent_index])
+
+    @property
+    def value_sum(self) -> float:
+        if self.parent is None:
+            assert self._root_stats is not None
+            return self._root_stats.value_sum
+        assert self.parent_index is not None
+        assert self.parent.child_value_sum is not None
+        # The parent stores the value from PoV of child so no need to negate it here.
+        return float(self.parent.child_value_sum[self.parent_index])
 
     def is_leafnode(self) -> bool:
         return self.legal_actions is None
@@ -318,21 +344,27 @@ class Node(Generic[GameStateT, MoveT]):
         """
         assert self.legal_actions is not None
         assert self.priors is not None
-        assert len(self.legal_actions) > 0
+        assert self.child_visits is not None
+        assert self.child_value_sum is not None
+        assert self.legal_actions.ndim == 1 and self.legal_actions.shape[0] > 0
 
-        expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.visits)
-        best_child_index = max(
-            range(len(self.legal_actions)),
-            key=lambda i: self.get_ucb(i, expl_sqrt_visits)
+        best_child_index = best_ucb_index(
+            self.priors,
+            self.child_visits,
+            self.child_value_sum,
+            self.visits,
+            self.MCTS_factory.exploration,
         )
 
         best_child = self.children[best_child_index]
         if best_child is None:
+            move = state.decode_action(int(self.legal_actions[best_child_index]), self.player)
             best_child = Node(
-                parent=self,
-                parent_move=state.decode_action(int(self.legal_actions[best_child_index]), self.player),
-                player=-self.player,
-                MCTS_factory=self.MCTS_factory
+                self,
+                move,
+                best_child_index,
+                -self.player,
+                self.MCTS_factory
             )
             self.children[best_child_index] = best_child
 
@@ -341,6 +373,9 @@ class Node(Generic[GameStateT, MoveT]):
         return best_child
 
     def get_ucb(self, index: int, expl_sqrt_visits: float) -> float:
+        """
+        For use by search() only (ucb)
+        """
         assert self.priors is not None
         child = self.children[index]
 
@@ -358,23 +393,22 @@ class Node(Generic[GameStateT, MoveT]):
 
         return q + u
 
-    def expand(self, sparse_policy: SparseLegalPolicy) -> None:
+    def expand(self, legal_actions: NDArray[np.uint16], probs: NDArray[np.float32]) -> None:
         assert self.legal_actions is None
         assert self.priors is None
-        assert sparse_policy.probs.ndim == 1
-        # assertion now done in NodeBatch.py when unpacking the sparse policy
-        # assert np.all(
-        #     (sparse_policy.probs >= 0.0)
-        #     & (sparse_policy.probs <= 1.0)
-        # ), "Sparse policy probabilities must be in range [0, 1]"
+        assert legal_actions.ndim == 1 and legal_actions.shape[0] > 0
 
-        self.legal_actions = sparse_policy.legal_actions.copy()
-        self.priors = cast(list[float], sparse_policy.probs.tolist())
-        self.children = [None] * len(self.legal_actions)
+        self.legal_actions = legal_actions.copy()
+        self.priors = probs.copy()
+
+        K = self.legal_actions.shape[0]
+        assert self.priors.shape == (K,)
+
+        self.child_visits = np.zeros(K, dtype=np.uint32)
+        self.child_value_sum = np.zeros(K, dtype=np.float32)
+        self.children = [None] * K
 
     def backpropogate(self, visits: int, total_value: float, terminal: bool, state: GameStateT) -> None:
-        self.value_sum += total_value
-        self.visits += visits
         if terminal:
             single_value = total_value / visits
             if (self.value is not None):
@@ -382,36 +416,80 @@ class Node(Generic[GameStateT, MoveT]):
                 assert math.isclose(single_value, self.value), "Inconsistent value for terminal node."
             else:
                 self.value = single_value
-        if self.parent is not None:
-            assert state.pop_board() == self.parent_move, "Board state does not match parent action during backpropagation."
-            self.parent.backpropogate(visits, -1 * total_value, False, state)
-
-    def print_children(self, depth: int=0, *, limit: int=1) -> None:
-        if depth == 0:
-            logging.debug("@@@ printing children")
 
         if self.parent is None:
-            visits = self.visits
-            avg_value = self.value_sum / (self.visits + 0.01)
-            logging.debug(f"{'\t' * depth} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})")
-        else:
-            pct_visits = self.visits / (self.parent.visits + 0.01)
-            visits = self.visits
-            avg_value = self.value_sum / (self.visits + 0.01)
-            index = self.parent.children.index(self)
-
-            expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.parent.visits)
-            ucb = self.parent.get_ucb(index, expl_sqrt_visits)
-            move = self.parent_move
-
-            logging.debug(f"{'\t' * depth}"
-                        f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
-                        f" | ucb {ucb:.3f}")
-        if depth >= limit:
+            assert self._root_stats is not None
+            self._root_stats.visits += visits
+            self._root_stats.value_sum += total_value
             return
 
-        for child in self.children:
-            if child is not None:
-                child.print_children(depth + 1, limit=limit)
-            else:
-                logging.debug(f"{'\t' * (depth + 1)} <unexpanded child>")
+        parent = self.parent
+        index = self.parent_index
+
+        assert index is not None
+        assert parent.child_visits is not None
+        assert parent.child_value_sum is not None
+
+        # Update the statistics on the parent's edge.
+        parent.child_visits[index] += visits
+        # Parent stores value from PoV of child.
+        parent.child_value_sum[index] += total_value
+
+        assert state.pop_board() == self.parent_move, "Board state does not match parent action during backpropagation."
+        parent.backpropogate(visits, -total_value, False, state)
+
+    # def print_children(self, depth: int=0, *, limit: int=1) -> None:
+    #     if depth == 0:
+    #         logging.debug("@@@ printing children")
+
+    #     if self.parent is None:
+    #         visits = self.visits
+    #         avg_value = self.value_sum / (self.visits + 0.01)
+    #         logging.debug(f"{'\t' * depth} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})")
+    #     else:
+    #         pct_visits = self.visits / (self.parent.visits + 0.01)
+    #         visits = self.visits
+    #         avg_value = self.value_sum / (self.visits + 0.01)
+    #         index = self.parent.children.index(self)
+
+    #         expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.parent.visits)
+    #         ucb = self.parent.get_ucb(index, expl_sqrt_visits)
+    #         move = self.parent_move
+
+    #         logging.debug(f"{'\t' * depth}"
+    #                     f"{move}: {pct_visits:>6.1%} ({visits:>4}) visits | E(value): {avg_value:+.2f} ({avg_value/2 + 0.5:>6.1%})"
+    #                     f" | ucb {ucb:.3f}")
+    #     if depth >= limit:
+    #         return
+
+    #     for child in self.children:
+    #         if child is not None:
+    #             child.print_children(depth + 1, limit=limit)
+    #         else:
+    #             logging.debug(f"{'\t' * (depth + 1)} <unexpanded child>")
+
+@njit(cache=True, nogil=True)
+def best_ucb_index(
+    priors: NDArray[np.float32],
+    visits: NDArray[np.uint32],
+    value_sums: NDArray[np.float32],
+    parent_visits: int,
+    exploration: float,
+) -> int:
+    factor = exploration * math.sqrt(parent_visits)
+
+    best_index = 0
+    best_score = -math.inf
+
+    for i in range(len(priors)):
+        n = visits[i]
+
+        q = -value_sums[i] / n if n > 0 else 0.0
+        u = factor * priors[i] / (1 + n)
+        score = q + u
+
+        if score > best_score:
+            best_score = score
+            best_index = i
+
+    return best_index

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self, TYPE_CHECKING
+from typing import Self, TYPE_CHECKING, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -93,10 +93,10 @@ class BatchSparseLegalPolicy:
         """
         offset = 0
         ret: list[tuple[int, SparseLegalPolicy]] = []
-        for worker_idx, length, value in zip(self.thread_idxs, self.lengths, self.values, strict=True):
+        for thread_idx, length, value in zip(self.thread_idxs, self.lengths, self.values, strict=True):
             end = offset + int(length)
             ret.append((
-                int(worker_idx),
+                int(thread_idx),
                 SparseLegalPolicy(
                     legal_actions=self.legal_actions[offset:end], 
                     probs=self.probs[offset:end],
@@ -197,8 +197,8 @@ class AZ_NodeBatchResponse:
     worker_id:  int
     batch_sparse_legal_policy: BatchSparseLegalPolicy
 
-    def unpack(self) -> list[tuple[int, SparseLegalPolicy]]:
-        return self.batch_sparse_legal_policy.unpack()
+    # def unpack(self) -> list[tuple[int, SparseLegalPolicy]]:
+    #     return self.batch_sparse_legal_policy.unpack()
 
     def __len__(self) -> int:
         return len(self.batch_sparse_legal_policy.thread_idxs)
