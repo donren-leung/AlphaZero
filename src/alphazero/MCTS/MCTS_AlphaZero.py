@@ -95,7 +95,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             assert self.root.parent_move is None
             assert self.root.parent_index is None
         else:
-            self.root = Node(None, None, None, player, MCTS_factory=MCTS_factory)
+            self.root = Node(None, None, None, player)
         self.rollouts = rollouts
         self.MCTS_factory = MCTS_factory
 
@@ -119,7 +119,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         # which maximises UCB score.
         curr = self.root
         while not curr.is_leafnode():
-            curr = curr.select(self.game_state)
+            curr = curr.select(self.game_state, self.MCTS_factory.exploration)
 
         # (Now at a leaf node)
         # Expansion:
@@ -242,7 +242,9 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         if kept_child is not None:
             if not any(child is kept_child for child in self.root.children):
                 raise ValueError("kept_child must be a direct child of root")
-            kept_child._root_stats = RootStats(kept_child.visits, kept_child.value_sum)
+            kept_child._root_stat_visits    = kept_child.visits
+            kept_child._root_stat_value_sum = kept_child.value_sum
+
             kept_child.parent = None
             kept_child.parent_index = None
             kept_child.parent_move = None
@@ -273,24 +275,18 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             raise ValueError(f"Chosen action {action} does not correspond to any child of the root.")
         return result
 
-@dataclass(slots=True)
-class RootStats:
-    visits: int = 0
-    value_sum: float = 0.0
-
 class Node(Generic[GameStateT, MoveT]):
     __slots__ = [
         "parent", "parent_index", "parent_move",
         "player", "children", "legal_actions",
         "priors", "child_visits", "child_value_sum",
-        "value", "_root_stats", "MCTS_factory"
+        "value", "_root_stat_visits", "_root_stat_value_sum"
     ]
     def __init__(self,
                  parent: Node[GameStateT, MoveT] | None,
                  parent_move: MoveT | None,
                  parent_index: int | None,
-                 player: int,
-                 MCTS_factory: MCTS_Factory) -> None:
+                 player: int) -> None:
         assert (parent is None) == (parent_move is None)
         assert (parent is None) == (parent_index is None)
 
@@ -298,7 +294,6 @@ class Node(Generic[GameStateT, MoveT]):
         self.parent_index = parent_index    # Index of node's parent's child-list
         self.parent_move = parent_move      # Move made by parent node to get to here
         self.player = player                # Player to move
-        self.MCTS_factory = MCTS_factory
 
         # Child MCTS nodes
         self.children: list[Node[GameStateT, MoveT] | None]  = []
@@ -307,20 +302,21 @@ class Node(Generic[GameStateT, MoveT]):
         # Child priors corresponding to legal_actions
         self.priors:          NDArray[np.float32] | None     = None
 
-        self.child_visits:    NDArray[np.uint32] | None      = None
+        self.child_visits:    NDArray[np.uint16] | None      = None
         # Keeps it in PoV of child
         self.child_value_sum: NDArray[np.float32] | None     = None
 
         # If terminal node, assign value on first simulation and return it
-        self.value:           float | None                   = None
+        self.value:                  float | None            = None
         # Only the root owns standalone statistics.
-        self._root_stats = RootStats() if parent is None else None
+        self._root_stat_visits:      int | None              = 0 if parent is None else None
+        self._root_stat_value_sum:   float | None            = 0.0 if parent is None else None
 
     @property
     def visits(self) -> int:
         if self.parent is None:
-            assert self._root_stats is not None
-            return self._root_stats.visits
+            assert self._root_stat_visits is not None
+            return self._root_stat_visits
         assert self.parent_index is not None
         assert self.parent.child_visits is not None
         return int(self.parent.child_visits[self.parent_index])
@@ -328,8 +324,8 @@ class Node(Generic[GameStateT, MoveT]):
     @property
     def value_sum(self) -> float:
         if self.parent is None:
-            assert self._root_stats is not None
-            return self._root_stats.value_sum
+            assert self._root_stat_value_sum is not None
+            return self._root_stat_value_sum
         assert self.parent_index is not None
         assert self.parent.child_value_sum is not None
         # The parent stores the value from PoV of child so no need to negate it here.
@@ -338,7 +334,7 @@ class Node(Generic[GameStateT, MoveT]):
     def is_leafnode(self) -> bool:
         return self.legal_actions is None
 
-    def select(self, state: GameStateT) -> Node[GameStateT, MoveT]:
+    def select(self, state: GameStateT, exploration: float) -> Node[GameStateT, MoveT]:
         """
         Side-effect: pushes the move of the best child onto the board.
         """
@@ -353,7 +349,7 @@ class Node(Generic[GameStateT, MoveT]):
             self.child_visits,
             self.child_value_sum,
             self.visits,
-            self.MCTS_factory.exploration,
+            exploration,
         )
 
         best_child = self.children[best_child_index]
@@ -363,8 +359,7 @@ class Node(Generic[GameStateT, MoveT]):
                 self,
                 move,
                 best_child_index,
-                -self.player,
-                self.MCTS_factory
+                -self.player
             )
             self.children[best_child_index] = best_child
 
@@ -404,7 +399,7 @@ class Node(Generic[GameStateT, MoveT]):
         K = self.legal_actions.shape[0]
         assert self.priors.shape == (K,)
 
-        self.child_visits = np.zeros(K, dtype=np.uint32)
+        self.child_visits = np.zeros(K, dtype=np.uint16)
         self.child_value_sum = np.zeros(K, dtype=np.float32)
         self.children = [None] * K
 
@@ -418,9 +413,10 @@ class Node(Generic[GameStateT, MoveT]):
                 self.value = single_value
 
         if self.parent is None:
-            assert self._root_stats is not None
-            self._root_stats.visits += visits
-            self._root_stats.value_sum += total_value
+            assert self._root_stat_visits is not None
+            assert self._root_stat_value_sum is not None
+            self._root_stat_visits += visits
+            self._root_stat_value_sum += total_value
             return
 
         parent = self.parent
@@ -471,7 +467,7 @@ class Node(Generic[GameStateT, MoveT]):
 @njit(cache=True, nogil=True)
 def best_ucb_index(
     priors: NDArray[np.float32],
-    visits: NDArray[np.uint32],
+    visits: NDArray[np.uint16],
     value_sums: NDArray[np.float32],
     parent_visits: int,
     exploration: float,
