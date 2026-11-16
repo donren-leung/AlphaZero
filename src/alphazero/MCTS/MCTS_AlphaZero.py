@@ -93,7 +93,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             assert self.root.parent is None
             assert self.root.parent_move is None
         else:
-            self.root = Node(None, None, player)
+            self.root = Node(None, None, player, MCTS_factory=MCTS_factory)
         self.rollouts = rollouts
         self.MCTS_factory = MCTS_factory
 
@@ -186,13 +186,14 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         assert self.root.legal_actions is not None
         assert self.root.priors is not None
 
+        expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.root.visits)
         for idx, child in enumerate(self.root.children):
             if child is not None:
                 assert child.parent_move is not None
                 children_details.append((
                     child.visits / self.root.visits if self.rollouts else math.nan,
                     (-child.value_sum / child.visits) if child.visits else math.nan,
-                    self.root.get_ucb(idx),
+                    self.root.get_ucb(idx, expl_sqrt_visits),
                     child.visits,
                     child.parent_move,
                     float(self.root.priors[idx])
@@ -202,7 +203,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
                 children_details.append((
                     0,                      # pct_visits
                     math.nan,               # avg_value
-                    self.root.get_ucb(idx), # ucb
+                    self.root.get_ucb(idx, expl_sqrt_visits), # ucb
                     0,                      # visits
                     state.decode_action(int(self.root.legal_actions[idx]), self.root.player),
                     float(self.root.priors[idx])                # prior_prob
@@ -276,14 +277,15 @@ class Node(Generic[GameStateT, MoveT]):
                  "legal_actions",
                  "priors",
                  "value",
-                #  "prior_prob",
                  "value_sum",
-                 "visits"]
+                 "visits",
+                 "MCTS_factory"
+                 ]
     def __init__(self,
                  parent: Node[GameStateT, MoveT] | None,
                  parent_move: MoveT | None,
-                #  prior_prob: float,
-                 player: int) -> None:
+                 player: int,
+                 MCTS_factory: MCTS_Factory) -> None:
         if parent is None:
             assert parent_move is None
         else:
@@ -305,6 +307,8 @@ class Node(Generic[GameStateT, MoveT]):
         self.value_sum: float                         = 0
         self.visits: int                              = 0
 
+        self.MCTS_factory = MCTS_factory
+
     def is_leafnode(self) -> bool:
         return self.legal_actions is None
 
@@ -316,9 +320,10 @@ class Node(Generic[GameStateT, MoveT]):
         assert self.priors is not None
         assert len(self.legal_actions) > 0
 
+        expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.visits)
         best_child_index = max(
             range(len(self.legal_actions)),
-            key=self.get_ucb,
+            key=lambda i: self.get_ucb(i, expl_sqrt_visits)
         )
 
         best_child = self.children[best_child_index]
@@ -326,7 +331,8 @@ class Node(Generic[GameStateT, MoveT]):
             best_child = Node(
                 parent=self,
                 parent_move=state.decode_action(int(self.legal_actions[best_child_index]), self.player),
-                player=-self.player
+                player=-self.player,
+                MCTS_factory=self.MCTS_factory
             )
             self.children[best_child_index] = best_child
 
@@ -334,7 +340,7 @@ class Node(Generic[GameStateT, MoveT]):
         state.push_to_board(best_child.parent_move)
         return best_child
 
-    def get_ucb(self, index: int) -> float:
+    def get_ucb(self, index: int, expl_sqrt_visits: float) -> float:
         assert self.priors is not None
         child = self.children[index]
 
@@ -345,9 +351,8 @@ class Node(Generic[GameStateT, MoveT]):
             else 0.0
         )
         u = (
-            MCTS_Factory.exploration
+            expl_sqrt_visits
             * float(self.priors[index])
-            * math.sqrt(self.visits)
             / (1 + visits)
         )
 
@@ -392,7 +397,9 @@ class Node(Generic[GameStateT, MoveT]):
             visits = self.visits
             avg_value = self.value_sum / (self.visits + 0.01)
             index = self.parent.children.index(self)
-            ucb = self.parent.get_ucb(index)
+
+            expl_sqrt_visits = self.MCTS_factory.exploration * math.sqrt(self.parent.visits)
+            ucb = self.parent.get_ucb(index, expl_sqrt_visits)
             move = self.parent_move
 
             logging.debug(f"{'\t' * depth}"
