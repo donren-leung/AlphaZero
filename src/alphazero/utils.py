@@ -154,6 +154,7 @@ class ThreadSafeCounter:
         with self._lock:
             return self._value
 
+SLEEP_S = 0.1
 def metrics_daemon(
     stop_event: threading.Event,
     metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]],
@@ -181,7 +182,7 @@ def metrics_daemon(
 
     while not stop_event.is_set():
         now = time.perf_counter()
-        timeout = max(0.0, next_print - now)
+        # timeout = max(0.0, next_print - now)
 
         # Drain available evaluation metrics without blocking.
         while True:
@@ -191,15 +192,17 @@ def metrics_daemon(
             except queue.Empty:
                 break
 
-        try:
-            for metrics_queue in metrics_queues:
-                worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(block=False)
-                latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
-        except queue.Empty:
-            pass
+        for metrics_queue in metrics_queues:
+            for _ in range(10):  # Drain up to 10 messages per queue to avoid blocking
+                try:
+                    worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(block=False)
+                    latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+                except queue.Empty:
+                    break
 
         now = time.perf_counter()
         if now < next_print:
+            stop_event.wait(min(SLEEP_S, next_print - now))
             continue
 
         elapsed = now - interval_start

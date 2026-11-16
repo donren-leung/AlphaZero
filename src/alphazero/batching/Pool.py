@@ -1,5 +1,5 @@
 import time
-from typing import Counter
+from typing import Any, Callable, Counter
 
 import torch
 import numpy as np
@@ -29,12 +29,16 @@ class GPU_AZ_Worker(object):
     def run(self) -> None:
         self.model.to(self.device)
         self.model.eval()
+        self.compiled_model: Callable[..., Any] = torch.compile(self.model, mode="reduce-overhead")
 
         window_start = time.perf_counter()
         # Each row: (receive seconds, compute seconds, submit seconds)
         timings = []
         batch_sizes: Counter[int] = Counter()
         nodes = 0
+
+        torch.set_num_threads(1)
+        print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
 
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             while True:
@@ -75,7 +79,7 @@ class GPU_AZ_Worker(object):
 
         # Transfer compact inputs to GPU.
         # (B, C, H, W)
-        x = torch.as_tensor(batch.states, device=self.device, dtype=torch.float32)
+        x = torch.as_tensor(batch.states, device=self.device).to(torch.float32)
         # (B, K)
         action_idx = torch.as_tensor(batch.padded_legal_actions, device=self.device, dtype=torch.int64)
         # (B,)

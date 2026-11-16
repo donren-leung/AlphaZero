@@ -63,7 +63,7 @@ def self_play(
         eval_worker_ps.append(p)
 
     for i, results_queue in enumerate(results_queues):
-        worker_metrics_queue = mpQueueGen(ctx)
+        worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
         worker_metrics_queues.append(worker_metrics_queue)
         game_worker = GameWorker(game_type,
                                  num_games=GAME_WORKER_GAMES,
