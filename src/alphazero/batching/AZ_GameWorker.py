@@ -251,19 +251,12 @@ class GameWorker(Generic[GameStateT], object):
                 # if self.MCTS_factory.debug > 0:
                 #     MCTS_instance.root.print_children(0, limit=2)
 
-            # Make move
+            # Extract final MCTS statistics
             root = MCTS_instance.root
-            action_probs = np.zeros(self.game_type.action_size, dtype=np.float32)
-            assert root.legal_actions is not None
-
-            for idx, child in enumerate(root.children):
-                action_idx = root.legal_actions[idx]
-                if child is not None:
-                    action_probs[action_idx] = child.visits
-
-            action_probs /= np.sum(action_probs, dtype=np.float32)
-            legal_actions_arr = np.array(root.legal_actions, dtype=np.uint16)
-            sparse_probs = action_probs[legal_actions_arr].astype(np.float32)
+            assert root.ints is not None
+            legal_actions_arr = root.ints[0]
+            sparse_probs = root.ints[1].astype(np.float32)
+            sparse_probs /= sparse_probs.sum(dtype=np.float32)
 
             # If we did a full search i.e. not fast, provided root was None then
             # we append to history.

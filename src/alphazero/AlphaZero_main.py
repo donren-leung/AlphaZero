@@ -26,8 +26,6 @@ from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 GameStateT = TypeVar("GameStateT", bound=GameStateBase)
 
-RANDOM_SEED = 42
-
 def self_play(
          game_type: type[GameBase[GameStateT]],
          ROLLOUTS: int,
@@ -35,6 +33,7 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
+         RANDOM_SEED: int
     ) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
@@ -196,9 +195,10 @@ class AlphaZero:
                   ROLLOUTS: int,
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
-                  GAME_WORKER_GAMES: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
+                  GAME_WORKER_GAMES: int,
+                  RANDOM_SEED: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
         self.model_args["state_dict"] = self.model.state_dict()
-        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args)
+        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args, RANDOM_SEED)
 
     def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
         random.shuffle(memory)
@@ -241,6 +241,7 @@ class AlphaZero:
                 self.args.processes,
                 self.args.game_workers,
                 self.args.games_per_worker,
+                self.args.seed
             )
 
             self.model.to("cuda")
@@ -283,6 +284,7 @@ def main():
         "head_hidden_size": args.head_channels,
         "batch_size": args.batch_size,
         "state_dict": None,
+        "random_seed": args.seed
     }
 
     model = ResNet(**model_args)

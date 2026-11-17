@@ -137,6 +137,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to a saved model to resume training from (default: None)",
     )
 
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for worker processes (default: 42)",
+    )
+
     return parser.parse_args()
 
 class ThreadSafeCounter:
