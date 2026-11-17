@@ -26,6 +26,8 @@ from .utils import parse_args, metrics_daemon, ThreadSafeCounter
 
 GameStateT = TypeVar("GameStateT", bound=GameStateBase)
 
+RANDOM_SEED = 42
+
 def self_play(
          game_type: type[GameBase[GameStateT]],
          ROLLOUTS: int,
@@ -76,7 +78,8 @@ def self_play(
                                  out_queue=request_queues[i],
                                  metrics_queue=worker_metrics_queue,
                                  worker_id=i,
-                                 MCTS_factory=MCTS_factory)
+                                 MCTS_factory=MCTS_factory,
+                                 random_seed=RANDOM_SEED)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
         game_worker_ps.append(p)
 

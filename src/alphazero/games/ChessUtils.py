@@ -282,4 +282,3 @@ class RepetitionTracker:
                 self.board.pop()
 
         return False
-

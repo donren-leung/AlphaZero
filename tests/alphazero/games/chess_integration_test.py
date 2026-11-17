@@ -149,7 +149,7 @@ def test_fifty_move_rule_is_claimable_draw() -> None:
     assert not board.can_claim_fifty_moves()
     assert ChessState(board).get_value_and_terminated() == (0, False)
 
-def test_game_move_updates_state_and_keeps_starting_board_unchanged() -> None:
+def test_game_move_updates_state_and_changes_starting_board() -> None:
     start = chess.Board()
     game = ChessGame(ChessState(start))
     move = chess.Move.from_uci("e2e4")
@@ -159,7 +159,7 @@ def test_game_move_updates_state_and_keeps_starting_board_unchanged() -> None:
     assert game.get_legal_actions()[action]
     game._make_move(action, 1)
 
-    assert start.fen() == initial_fen
+    assert start.fen() != initial_fen
     assert game.state.board.peek() == move
     assert game.state.board.turn == chess.BLACK
     assert game.get_legal_actions().shape == (CHESS_ACTION_SIZE,)

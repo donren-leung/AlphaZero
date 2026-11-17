@@ -34,12 +34,14 @@ class GameWorker(Generic[GameStateT], object):
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
                  metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
-                 worker_id: int, MCTS_factory: MCTS_Factory):
+                 worker_id: int, MCTS_factory: MCTS_Factory,
+                 random_seed: int):
         self.game_type = game_type
         self.num_games = num_games
 
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
+        self.random_seed = random_seed
 
         # Threading
         # Multiprocess stuff
@@ -193,7 +195,8 @@ class GameWorker(Generic[GameStateT], object):
     def search_move(self,
                     thread_id: int,
                     game: GameBase[GameStateT],
-                    initial_root: Node | None):
+                    initial_root: Node | None,
+                    rng: np.random.Generator):
         MCTS_instance = self.MCTS_factory.make_instance(game=game, root=initial_root)
         try:
             while MCTS_instance.root.visits <= MCTS_instance.num_rollouts(initial_root is not None):
@@ -228,7 +231,7 @@ class GameWorker(Generic[GameStateT], object):
                     if node is MCTS_instance.root and initial_root is None:
                         num_legal = legal_actions.shape[0]
                         alpha = self.MCTS_factory.DIRICHLET_CONST / num_legal
-                        noise = np.random.dirichlet(np.full(num_legal, alpha)).astype(np.float32)
+                        noise = rng.dirichlet(np.full(num_legal, alpha)).astype(np.float32)
 
                         probs = (
                             (1.0 - self.MCTS_factory.dirichlet_epsilon) * probs
@@ -281,24 +284,29 @@ class GameWorker(Generic[GameStateT], object):
 
     def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
+        rng = np.random.default_rng([self.random_seed, self.worker_id, thread_id])
 
-        # player
         first_player = game.current_player
         initial_root = None
         while True:
             logging.debug(f"thread {thread_id} move {len(game.history.get('states', []))}")
 
             # Game after last move is still going, create new MCTS instance.
-            legal_actions_arr, sparse_probs, MCTS_instance = self.search_move(thread_id, game, initial_root=initial_root)
+            legal_actions_arr, sparse_probs, MCTS_instance = self.search_move(
+                thread_id,
+                game,
+                initial_root=initial_root,
+                rng=rng
+            )
 
             temperature_probs = np.power(sparse_probs, 1.0 / self.MCTS_factory.temperature)
             temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
-            action = int(np.random.choice(legal_actions_arr, p=temperature_probs))
+            action = int(rng.choice(legal_actions_arr, p=temperature_probs))
 
             # Next move is randomly a fast (reuse) or slow (restart) MCTS search.
             # Based on https://arxiv.org/pdf/1902.10565v5 (KataGo) "Playout Cap Randomization"
             # If fast, keep previous root; dispose of all child nodes except for the chosen one.
-            if np.random.rand() < self.MCTS_factory.fast_rollouts_chance:
+            if rng.random() < self.MCTS_factory.fast_rollouts_chance:
                 initial_root = MCTS_instance.get_child_by_action(action)
                 MCTS_instance.dispose(kept_child=initial_root)
             else:
@@ -335,6 +343,7 @@ class GameWorker(Generic[GameStateT], object):
             del MCTS_instance
 
         # Game finished
+        # TODO: use pipe?
         logging.info(f"thread {thread_id} finished game")
         self.output_games.put((f"{self.worker_id}_{thread_id}", game))
 

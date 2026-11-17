@@ -48,14 +48,14 @@ class ChessState(GameStateBase[chess.Move]):
         return legal_actions
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ChessState':
+        move = decode_action(self.board, action, player)
         if copy:
-            new_state = self.board.copy()
+            new_state = ChessState(self.board.copy())
+            new_state.push_to_board(move)
+            return new_state
         else:
-            new_state = self.board
-
-        move = decode_action(new_state, action, player)
-        new_state.push(move)
-        return ChessState(new_state)
+            self.push_to_board(move)
+            return self
 
     def encode_move(self, move: chess.Move) -> int:
         return encode_move(self.board, move, 1 if self.board.turn == chess.WHITE else -1)
@@ -81,7 +81,7 @@ class ChessState(GameStateBase[chess.Move]):
         if outcome is not None:
             # Normal game end
             if outcome.winner is None:
-                # Draw
+                # Draw (by stalemate or insufficient material)
                 return 0, True
             # Checkmate. The player who just moved is the winner, so the current player is the loser.
             assert outcome.winner is not self.board.turn
@@ -150,7 +150,7 @@ class ChessGame(GameBase[ChessState]):
         return self.state.get_legal_actions()
 
     def _make_move(self, action: int, player: int) -> None:
-        self.state = self.state.get_next_state(action, player)
+        self.state = self.state.get_next_state(action, player, copy=False)
 
     def get_value_and_terminated(self):
         return self.state.get_value_and_terminated()
