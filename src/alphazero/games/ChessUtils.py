@@ -1,4 +1,5 @@
-from typing import Sequence
+from collections import Counter
+from typing import Hashable, Sequence
 
 import chess
 import numpy as np
@@ -198,3 +199,87 @@ def piece_planes(board: chess.Board, perspective_white: bool) -> np.ndarray:
 
     # Mirror vertically if Black.
     return planes if perspective_white else planes[:, ::-1, :]
+
+class RepetitionTracker:
+    def __init__(self, board: chess.Board):
+        key = board._transposition_key()
+        self.key_counts: Counter[Hashable] = Counter()
+        self.key_counts.update((key, ))
+        self.key_stack: list[Hashable] = [key]
+
+        # Number of distinct positions seen at least twice.
+        self.num_repeated = 0
+
+        # Initialize at the beginning of the tracked history.
+        if board.move_stack:
+            switchyard: list[chess.Move] = []
+            while board.move_stack:
+                move = board.pop()
+                switchyard.append(move)
+
+                if board.is_irreversible(move):
+                    break
+
+                key = board._transposition_key()
+                self.key_counts.update((key, ))
+                self.key_stack.append(key)
+
+            while switchyard:
+                board.push(switchyard.pop())
+
+            self.key_stack = self.key_stack[::-1]
+
+        self.board = board
+
+    def push(self, move: chess.Move) -> None:
+        self.board.push(move)
+
+        key = self.board._transposition_key()
+        count = self.key_counts.get(key, 0)
+
+        if count == 1:
+            self.num_repeated += 1
+
+        self.key_counts[key] = count + 1
+        self.key_stack.append(key)
+
+    def pop(self) -> chess.Move:
+        key = self.key_stack.pop()
+        count = self.key_counts[key]
+
+        if count == 2:
+            self.num_repeated -= 1
+
+        if count == 1:
+            del self.key_counts[key]
+        else:
+            self.key_counts[key] = count - 1
+
+        return self.board.pop()
+
+    def is_threefold(self) -> bool:
+        return self.key_counts[self.key_stack[-1]] >= 3
+
+    def can_claim_threefold(self) -> bool:
+        # Current position already occurred three times.
+        if self.is_threefold():
+            return True
+
+        # Without any repeated position in the history,
+        # no legal move can produce a third occurrence.
+        if self.num_repeated == 0:
+            return False
+
+        # Only when repetitions exist do we need to
+        # investigate next-move claims.
+        for move in self.board.generate_legal_moves():
+            self.board.push(move)
+            try:
+                key = self.board._transposition_key()
+                if self.key_counts.get(key, 0) >= 2:
+                    return True
+            finally:
+                self.board.pop()
+
+        return False
+

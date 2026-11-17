@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
-from .ChessUtils import encode_move, decode_action, encode_chess, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
+from .ChessUtils import encode_move, decode_action, encode_chess, RepetitionTracker, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
 
 type Board = chess.Board
 type ModelInput = NDArray[np.uint8]
@@ -31,11 +31,13 @@ class CompactChessState:
         return encode_chess(board, self.repetition_flags)
 
 class ChessState(GameStateBase[chess.Move]):
-    __slots__ = ["board", "row_count", "col_count"]
+    row_count: ClassVar[int] = 8
+    col_count: ClassVar[int] = 8
+
+    __slots__ = ["board", "repetition_tracker"]
     def __init__(self, board: Board):
         self.board = board
-        self.row_count = 8
-        self.col_count = 8
+        self.repetition_tracker = RepetitionTracker(board)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         player = 1 if self.board.turn == chess.WHITE else -1
@@ -62,26 +64,36 @@ class ChessState(GameStateBase[chess.Move]):
         return decode_action(self.board, action, player)
 
     def push_to_board(self, move: chess.Move) -> None:
-        self.board.push(move)
+        self.repetition_tracker.push(move)
 
     def move_repr(self, move: chess.Move) -> str:
         return self.board.san(move)
 
     def pop_board(self) -> chess.Move:
-        return self.board.pop()
+        return self.repetition_tracker.pop()
 
     def get_value_and_terminated(self):
         if self.board.ply() >= 512:
             # Hard cap on 512 half-moves.
             return 0, True
-        outcome = self.board.outcome(claim_draw=True)
-        if outcome is None:
+
+        outcome = self.board.outcome(claim_draw=False)
+        if outcome is not None:
+            # Normal game end
+            if outcome.winner is None:
+                # Draw
+                return 0, True
+            # Checkmate. The player who just moved is the winner, so the current player is the loser.
+            assert outcome.winner is not self.board.turn
+            return 1, True
+        else:
+            # Potentially draw by claimable 50-move rule or 3-fold repetition
+            # Or game is still ongoing.
+            if self.board.can_claim_fifty_moves():
+                return 0, True
+            if self.repetition_tracker.can_claim_threefold():
+                return 0, True
             return 0, False
-        if outcome.winner is None:
-            return 0, True
-        # Checkmate. The player who just moved is the winner, so the current player is the loser.
-        assert outcome.winner is not self.board.turn
-        return 1, True
 
     def encode_for_model(self, player: int=0) -> ModelInput:
         return encode_chess(self.board)
