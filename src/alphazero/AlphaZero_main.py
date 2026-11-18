@@ -283,12 +283,15 @@ def main():
         "num_channels": args.channels,
         "head_hidden_size": args.head_channels,
         "batch_size": args.batch_size,
+        "inference_max_batch_size": args.inference_max_batch_size,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
         "state_dict": None,
         "random_seed": args.seed
     }
 
     model = ResNet(**model_args)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=model_args["learning_rate"], weight_decay=model_args["weight_decay"])
 
     az = AlphaZero(args, model, optimizer, model_args)
     az.learn()

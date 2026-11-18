@@ -102,7 +102,7 @@ class GPU_AZ_Worker(object):
         self.outboxes = outboxes
         self.metrics_queue = metrics_queue
 
-        self.batch_size = model_args["batch_size"]
+        self.batch_size = model_args["inference_max_batch_size"]
         model_args = {k: v for k, v in model_args.items() if k != "batch_size"}
         self.device = torch.device("cuda")
         self.model = ResNet(**model_args)
@@ -113,7 +113,7 @@ class GPU_AZ_Worker(object):
         # self.compiled_model: Callable[..., Any] = torch.compile(self.model, mode="reduce-overhead")
         self.compiled_compute = torch.compile(self.compute_tensors, mode="reduce-overhead", fullgraph=True)
 
-        torch.set_num_threads(1)
+        torch.set_num_threads(2)
         print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
 
         # Each row: (receive seconds, compute seconds, submit seconds)

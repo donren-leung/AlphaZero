@@ -78,8 +78,32 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         "-b",
         type=int,
-        default=64,
-        help="GPU batch size for node evaluation (default: 64)",
+        default=256,
+        help="GPU batch size for supervised training (default: 256)",
+    )
+
+    parser.add_argument(
+        "--inference-max-batch-size",
+        "-ib",
+        type=int,
+        default=256,
+        help="GPU batch size for node evaluation (default: 256)",
+    )
+
+    parser.add_argument(
+        "--learning-rate",
+        "-lr",
+        type=float,
+        default=0.01,
+        help="Learning rate for the optimizer (default: 0.01)",
+    )
+
+    parser.add_argument(
+        "--weight-decay",
+        "-wd",
+        type=float,
+        default=1e-4,
+        help="Weight decay for the optimizer (default: 1e-4)",
     )
 
     parser.add_argument(
