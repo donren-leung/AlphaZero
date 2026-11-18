@@ -24,7 +24,7 @@ class GameWorker(Generic[GameStateT], object):
     metrics_interval_s = 0.5
     MAX_WAIT_S = 20.0
     SMALL_BATCH_SIZE = 4
-    MAX_WAIT_S_SMALL = 0.1
+    MAX_WAIT_S_SMALL = 0.02
 
     MIN_BATCH_SIZE = 1
     MAX_BATCH_SIZE = 256

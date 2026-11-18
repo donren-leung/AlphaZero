@@ -1,6 +1,9 @@
+from dataclasses import dataclass
 from multiprocessing.connection import Connection, wait
+from queue import Queue
 import time
-from typing import Any, Callable, Counter, cast
+from threading import Thread
+from typing import Any, Callable, Counter, Self, cast
 
 import torch
 import numpy as np
@@ -10,8 +13,69 @@ from alphazero.models.model import ResNet
 from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, BatchSparseLegalPolicy
 from .Queues import mpQueueGen
 
+@dataclass(frozen=True)
+class Route:
+    worker_id: int
+    start: int
+    stop: int
+
+@dataclass(frozen=True)
+class CombinedBatch:
+    states: np.ndarray
+    thread_idxs: np.ndarray
+    lengths: np.ndarray
+    padded_legal_actions: np.ndarray
+    routes: tuple[Route, ...]
+
+    @classmethod
+    def combine(cls, batches: list[AZ_NodeBatchRequest]) -> Self:
+        total = sum(len(b.thread_idxs) for b in batches)
+        width = max(b.padded_legal_actions.shape[1] for b in batches)
+
+        actions = np.zeros((total, width), dtype=np.uint16)
+        routes = []
+        offset = 0
+
+        for batch in batches:
+            count, local_width = batch.padded_legal_actions.shape
+            stop = offset + count
+
+            actions[offset:stop, :local_width] = batch.padded_legal_actions
+            routes.append(Route(batch.worker_id, offset, stop))
+            offset = stop
+
+        return cls(
+            states=np.concatenate([b.states for b in batches]),
+            thread_idxs=np.concatenate([b.thread_idxs for b in batches]),
+            lengths=np.concatenate([b.lengths for b in batches]),
+            padded_legal_actions=actions,
+            routes=tuple(routes),
+        )
+
+    def deliver(self, result: BatchSparseLegalPolicy, outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> None:
+        offsets = np.empty(len(result.lengths) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(result.lengths, dtype=np.int64, out=offsets[1:])
+
+        for route in self.routes:
+            rows = slice(route.start, route.stop)
+            actions = slice(offsets[route.start], offsets[route.stop])
+
+            response = BatchSparseLegalPolicy(
+                thread_idxs=result.thread_idxs[rows],
+                lengths=result.lengths[rows],
+                legal_actions=result.legal_actions[actions],
+                probs=result.probs[actions],
+                values=result.values[rows],
+            )
+            outboxes[route.worker_id].put(
+                AZ_NodeBatchResponse(route.worker_id, response)
+            )
+
 class GPU_AZ_Worker(object):
     METRICS_INTERVAL_S = 0.5
+    MAX_PREFETCH = 2
+    MAX_WAIT_S = 0.002
 
     def __init__(self,
                  inboxes: list[mpQueueGen[AZ_NodeBatchRequest | None]],
@@ -35,50 +99,47 @@ class GPU_AZ_Worker(object):
         torch.set_num_threads(1)
         print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
 
-        reader_to_worker = {
-            inbox._reader(): worker_id
-            for worker_id, inbox in enumerate(self.inboxes)
-        }
-
         # Each row: (receive seconds, compute seconds, submit seconds)
         timings = []
         batch_sizes: Counter[int] = Counter()
         nodes = 0
 
+        self.ready_batches: Queue[
+            tuple[CombinedBatch, tuple[float, ...]] | Exception | None
+        ] = Queue(maxsize=self.MAX_PREFETCH)
+        def collect_requests():
+            try:
+                self.request_batch()
+            except Exception as error:
+                self.ready_batches.put(error)
+        collector_thread = Thread(target=collect_requests, daemon=True)
+        collector_thread.start()
+
         window_start = time.perf_counter()
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            while reader_to_worker:
-                t0 = time.perf_counter()
+            while True:
+                item = self.ready_batches.get()
+                if item is None:
+                    collector_thread.join()
+                    break
 
-                # Wait for any producer.
-                ready = wait(reader_to_worker)
-                reader = cast(Connection, ready[0])
-                worker_id = reader_to_worker.pop(reader)
+                if isinstance(item, Exception):
+                    collector_thread.join()
+                    raise RuntimeError("Request batching failed") from item
 
-                batch = self.inboxes[worker_id].get()
-                t1 = time.perf_counter()
-
-                if batch is None:
-                    # Producer terminated normally.
-                    continue
-
-                # Reinsert at end for fairer scheduling.
-                reader_to_worker[reader] = worker_id
-
-                assert batch.worker_id == worker_id
-
-                response = self.gpu_compute(batch)
-                t2 = time.perf_counter()
-
-                self.outboxes[batch.worker_id].put(AZ_NodeBatchResponse(batch.worker_id, response))
+                combined_batch, (t0, t1, t2) = item
+                response = self.gpu_compute(combined_batch)
                 t3 = time.perf_counter()
 
-                timings.append((t1 - t0, t2 - t1, t3 - t2))
-                size = len(batch.thread_idxs)
+                combined_batch.deliver(response, self.outboxes)
+                t4 = time.perf_counter()
+
+                timings.append((t1 - t0, t2 - t1, t3 - t2, t4 - t3))
+                size = len(combined_batch.thread_idxs)
                 batch_sizes[size] += 1
                 nodes += size
 
-                elapsed = t3 - window_start
+                elapsed = t4 - window_start
                 if elapsed >= self.METRICS_INTERVAL_S:
                     # Send metrics
                     self.metrics_queue.put((
@@ -100,7 +161,64 @@ class GPU_AZ_Worker(object):
                 dict(batch_sizes),
             ))
 
-    def gpu_compute(self, batch: AZ_NodeBatchRequest) -> BatchSparseLegalPolicy:
+    # NOTE: Can sometimes exceed batch size.
+    def request_batch(self) -> None:
+        def fish(wait_time: float | None) -> AZ_NodeBatchRequest | None:
+            # Wait for any producer.
+            ready = wait(reader_to_worker, wait_time)
+            if not ready:
+                return None
+
+            reader = cast(Connection, ready[0])
+            worker_id = reader_to_worker.pop(reader)
+
+            batch = self.inboxes[worker_id].get()
+
+            if batch is None:
+                # Producer terminated normally.
+                return None
+
+            # Reinsert at end for fairer scheduling.
+            reader_to_worker[reader] = worker_id
+            assert batch.worker_id == worker_id
+            return batch
+
+        reader_to_worker = {
+            inbox._reader(): worker_id
+            for worker_id, inbox in enumerate(self.inboxes)
+        }
+
+        while reader_to_worker:
+            t0 = time.perf_counter()
+            batch = fish(None)
+            t1 = time.perf_counter()
+
+            if batch is None:
+                continue
+
+            batches = [batch]
+            batch_size = len(batches[0].thread_idxs)
+            deadline = time.perf_counter() + self.MAX_WAIT_S
+
+            while reader_to_worker and batch_size < self.batch_size:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    break
+
+                new_batch = fish(remaining)
+                if new_batch is None:
+                    continue
+
+                batches.append(new_batch)
+                batch_size += len(new_batch.thread_idxs)
+
+            t2 = time.perf_counter()
+            combined_batch = CombinedBatch.combine(batches)
+            self.ready_batches.put((combined_batch, (t0, t1, t2)))
+
+        self.ready_batches.put(None)
+
+    def gpu_compute(self, batch: CombinedBatch | AZ_NodeBatchRequest) -> BatchSparseLegalPolicy:
         K = batch.padded_legal_actions.shape[1]
 
         # Transfer compact inputs to GPU.
@@ -113,7 +231,7 @@ class GPU_AZ_Worker(object):
 
         # Evaluate.
         # policy is (B, A) where A is e.g. 64*73=4672 and values is (B,)
-        policy_logits, values = self.model(x)
+        policy_logits, values = self.compiled_model(x)
 
         # assert torch.isfinite(policy_logits).all()
         # assert torch.isfinite(values).all()
