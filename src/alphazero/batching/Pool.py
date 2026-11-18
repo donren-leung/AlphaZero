@@ -29,35 +29,51 @@ class CombinedBatch:
 
     @classmethod
     def combine(cls, batches: list[AZ_NodeBatchRequest]) -> Self:
-        total = sum(len(b.thread_idxs) for b in batches)
-        width = max(b.padded_legal_actions.shape[1] for b in batches)
+        if not batches:
+            raise ValueError("Cannot combine an empty batch list")
 
-        actions = np.zeros((total, width), dtype=np.uint16)
-        routes = []
+        real_bs = sum(len(b.thread_idxs) for b in batches)
+        real_width = max(b.padded_legal_actions.shape[1] for b in batches)
+
+        batch_size = max(4, 1 << (real_bs - 1).bit_length())
+        width = 1 << (max(64, real_width) - 1).bit_length()
+
+        # [B', C, H, W]
+        states = np.zeros((batch_size, *batches[0].states.shape[1:]), dtype=np.uint8)
+        # [B', K']
+        actions = np.zeros((batch_size, width), dtype=np.uint16)
+        # [B']
+        lengths = np.zeros(batch_size, dtype=np.uint16)
+
+        routes: list[Route] = []
         offset = 0
 
         for batch in batches:
-            count, local_width = batch.padded_legal_actions.shape
-            stop = offset + count
+            batch_count, local_width = batch.padded_legal_actions.shape
+            stop = offset + batch_count
 
+            states[offset:stop] = batch.states
             actions[offset:stop, :local_width] = batch.padded_legal_actions
+            lengths[offset:stop] = batch.lengths
+
             routes.append(Route(batch.worker_id, offset, stop))
             offset = stop
 
         return cls(
-            states=np.concatenate([b.states for b in batches]),
+            states=states,
             thread_idxs=np.concatenate([b.thread_idxs for b in batches]),
-            lengths=np.concatenate([b.lengths for b in batches]),
+            lengths=lengths,
             padded_legal_actions=actions,
             routes=tuple(routes),
         )
 
-    def deliver(self, result: BatchSparseLegalPolicy, outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> None:
+    @classmethod
+    def deliver(cls, result: BatchSparseLegalPolicy, routes: tuple[Route, ...], outboxes: list[mpQueueGen[AZ_NodeBatchResponse]]) -> None:
         offsets = np.empty(len(result.lengths) + 1, dtype=np.int64)
         offsets[0] = 0
         np.cumsum(result.lengths, dtype=np.int64, out=offsets[1:])
 
-        for route in self.routes:
+        for route in routes:
             rows = slice(route.start, route.stop)
             actions = slice(offsets[route.start], offsets[route.stop])
 
@@ -75,7 +91,7 @@ class CombinedBatch:
 class GPU_AZ_Worker(object):
     METRICS_INTERVAL_S = 0.5
     MAX_PREFETCH = 2
-    MAX_WAIT_S = 0.002
+    MAX_WAIT_S = 0.02
 
     def __init__(self,
                  inboxes: list[mpQueueGen[AZ_NodeBatchRequest | None]],
@@ -94,14 +110,15 @@ class GPU_AZ_Worker(object):
     def run(self) -> None:
         self.model.to(self.device)
         self.model.eval()
-        self.compiled_model: Callable[..., Any] = torch.compile(self.model, mode="reduce-overhead")
+        # self.compiled_model: Callable[..., Any] = torch.compile(self.model, mode="reduce-overhead")
+        self.compiled_compute = torch.compile(self.compute_tensors, mode="reduce-overhead", fullgraph=True)
 
         torch.set_num_threads(1)
         print("Evaluator CPU intra-op threads:", torch.get_num_threads(), flush=True)
 
         # Each row: (receive seconds, compute seconds, submit seconds)
         timings = []
-        batch_sizes: Counter[int] = Counter()
+        batch_sizes: Counter[tuple[int, int]] = Counter()
         nodes = 0
 
         self.ready_batches: Queue[
@@ -128,16 +145,18 @@ class GPU_AZ_Worker(object):
                     raise RuntimeError("Request batching failed") from item
 
                 combined_batch, (t0, t1, t2) = item
-                response = self.gpu_compute(combined_batch)
-                t3 = time.perf_counter()
 
-                combined_batch.deliver(response, self.outboxes)
+                t3 = time.perf_counter()
+                response = self.gpu_compute(combined_batch)
                 t4 = time.perf_counter()
 
-                timings.append((t1 - t0, t2 - t1, t3 - t2, t4 - t3))
-                size = len(combined_batch.thread_idxs)
+                CombinedBatch.deliver(response, combined_batch.routes, self.outboxes)
+                t5 = time.perf_counter()
+
+                timings.append((t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4))
+                size = tuple(combined_batch.padded_legal_actions.shape)[:2]
                 batch_sizes[size] += 1
-                nodes += size
+                nodes += len(combined_batch.thread_idxs)
 
                 elapsed = t4 - window_start
                 if elapsed >= self.METRICS_INTERVAL_S:
@@ -219,23 +238,46 @@ class GPU_AZ_Worker(object):
         self.ready_batches.put(None)
 
     def gpu_compute(self, batch: CombinedBatch | AZ_NodeBatchRequest) -> BatchSparseLegalPolicy:
-        K = batch.padded_legal_actions.shape[1]
-
         # Transfer compact inputs to GPU.
         # (B, C, H, W)
         x = torch.as_tensor(batch.states, device=self.device).to(torch.float32)
         # (B, K)
-        action_idx = torch.as_tensor(batch.padded_legal_actions, device=self.device, dtype=torch.int64)
+        action_idx = torch.as_tensor(batch.padded_legal_actions, device=self.device).to(torch.int64)
         # (B,)
-        lengths_gpu = torch.as_tensor(batch.lengths, device=self.device, dtype=torch.int32)
+        lengths_gpu = torch.as_tensor(batch.lengths, device=self.device).to(torch.int32)
 
+        probs, values = self.compiled_compute(x, action_idx, lengths_gpu)
+
+        # Transfer back to CPU
+        probs_cpu = probs.cpu().numpy()
+        values_cpu = values.cpu().numpy()
+
+        # Remove padding
+        real_size = len(batch.thread_idxs)
+        # (R,)
+        real_lengths = batch.lengths[:real_size]
+        # (R, K)
+        real_actions = batch.padded_legal_actions[:real_size]
+        # (R, K) boolean mask
+        valid_cpu = np.arange(real_actions.shape[1])[None, :] < real_lengths[:, None]
+
+        return BatchSparseLegalPolicy(
+            thread_idxs=batch.thread_idxs,
+            lengths=real_lengths,
+            legal_actions=real_actions[valid_cpu],
+            probs=probs_cpu[:real_size][valid_cpu],
+            values=values_cpu[:real_size],
+        )
+
+    def compute_tensors(self, x, action_idx, lengths_gpu):
         # Evaluate.
         # policy is (B, A) where A is e.g. 64*73=4672 and values is (B,)
-        policy_logits, values = self.compiled_model(x)
+        policy_logits, values = self.model(x)
 
         # assert torch.isfinite(policy_logits).all()
         # assert torch.isfinite(values).all()
 
+        K = action_idx.shape[1]
         # Gather only legal-action logits via broadcasting -> (B, K)
         valid = (
             # (,K)
@@ -256,22 +298,7 @@ class GPU_AZ_Worker(object):
 
         probs = torch.softmax(safe_logits, dim=1)
         # probs = probs.masked_fill(~valid, 0.0) Not necessary if CPU filters out padding.
-
-        # Transfer fixed-shape outputs to CPU.
-        # This synchronizes so that the arrays are ready.
-        probs_cpu = probs.cpu().numpy()
-        values_cpu = values.float().reshape(-1).cpu().numpy()
-
-        # Remove padding on CPU.
-        valid_cpu = np.arange(K)[None, :] < batch.lengths[:, None]
-
-        return BatchSparseLegalPolicy(
-            thread_idxs=batch.thread_idxs,
-            lengths=batch.lengths,
-            legal_actions=batch.padded_legal_actions[valid_cpu],
-            probs=probs_cpu[valid_cpu],
-            values=values_cpu,
-        )
+        return probs, values.float().reshape(-1)
 
 class PoolFactory(object):
     def __init__(self,

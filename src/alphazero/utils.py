@@ -264,8 +264,8 @@ def metrics_daemon(
             mean_timings = np.mean(timings, axis=0)*1000
             p95_timings = np.percentile(timings, 95, axis=0)*1000
         else:
-            mean_timings = np.zeros(4)
-            p95_timings = np.zeros(4)
+            mean_timings = np.zeros(5)
+            p95_timings = np.zeros(5)
 
         eval_records.clear()
 
@@ -328,9 +328,10 @@ def metrics_daemon(
                 f"{human_readable(eval_batch_rate)} bps "
                 f":: batches: {unique_batch_sizes}"
                 f":: rec1 {mean_timings[0]:.1f}/{p95_timings[0]:.1f}ms "
-                f":: rec2 {mean_timings[1]:.1f}/{p95_timings[1]:.1f}ms "
-                f"compute {mean_timings[2]:.1f}/{p95_timings[2]:.1f}ms "
-                f"submit {mean_timings[3]:.1f}/{p95_timings[3]:.1f}ms",
+                f"rec2 {mean_timings[1]:.1f}/{p95_timings[1]:.1f}ms "
+                f"prp {mean_timings[2]:.1f}/{p95_timings[2]:.1f}ms "
+                f"compute {mean_timings[3]:.1f}/{p95_timings[3]:.1f}ms "
+                f"submit {mean_timings[4]:.1f}/{p95_timings[4]:.1f}ms",
                 flush=True,
             )
 
