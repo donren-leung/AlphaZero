@@ -21,6 +21,7 @@ from alphazero.games.ChessUtils import (
     encode_move,
     decode_action,
     encode_chess,
+    initial_history
 )
 
 def _player(board: chess.Board) -> int:
@@ -176,7 +177,7 @@ def old_encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None)
 
     # Time step planes
     features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
-    history = board.copy(stack=TIME_STEPS - 1)
+    history = board.copy()
     for ply in range(TIME_STEPS):
         for square, piece in history.piece_map().items():
             oriented = square if is_white else chess.square_mirror(square)
@@ -249,13 +250,13 @@ def test_new_encode_chess(pgn_str: str) -> None:
 
     board = game.board()
 
-    enc1 = encode_chess(board)
+    enc1 = encode_chess(board, initial_history(board))
     enc2 = old_encode_chess(board)
     assert np.array_equal(enc1, enc2)
 
     for move in game.mainline_moves():
         board.push(move)
-        enc1 = encode_chess(board)
+        enc1 = encode_chess(board, initial_history(board))
         enc2 = old_encode_chess(board)
         assert np.array_equal(enc1, enc2)
 

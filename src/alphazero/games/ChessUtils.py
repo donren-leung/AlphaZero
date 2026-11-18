@@ -1,4 +1,5 @@
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Hashable, Sequence
 
 import chess
@@ -115,7 +116,7 @@ def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
 
     return chess.Move(from_sq, to_sq, promotion=promotion)
 
-def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> NDArray[np.uint8]:
+def encode_chess(board: chess.Board, history: Sequence[NDArray[np.uint8]]) -> NDArray[np.uint8]:
     """
     Accepts optional repetition history.
     repetitions[t] is the number of repetitions of pos t halfmoves ago.
@@ -132,28 +133,18 @@ def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> 
     # No progress clock (1); whole plane encoded
 
     is_white = board.turn
-
-    # Time step planes
     features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
-    historic_board = board.copy(stack=TIME_STEPS - 1)
-    for ply in range(TIME_STEPS):
-        start = ply * TIME_STEP_LAYERS
-        features[start:start + 12] = piece_planes(historic_board, is_white)
 
-        if repetitions is not None:
-            assert ply < len(repetitions), "Repetition history is shorter than the number of halfmoves"
-            r2 = repetitions[ply] >= 2
-            r3 = repetitions[ply] >= 3
+    for t, frame in enumerate(history[:TIME_STEPS]):
+        dst = features[t * TIME_STEP_LAYERS:(t + 1) * TIME_STEP_LAYERS]
+
+        if board.turn == chess.WHITE:
+            dst[:] = frame
         else:
-            r2 = historic_board.is_repetition(2)
-            r3 = historic_board.is_repetition(3)
-
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START, :, :] = r2
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START + 1, :, :] = r3
-
-        if not historic_board.move_stack:
-            break
-        historic_board.pop()
+            # Swap piece ownership and mirror ranks.
+            dst[:6] = frame[6:12, ::-1, :]
+            dst[6:12] = frame[:6, ::-1, :]
+            dst[12:14] = frame[12:14]
 
     # Auxiliary planes
     for plane, color, kingside in (
@@ -197,8 +188,43 @@ def piece_planes(board: chess.Board, perspective_white: bool) -> np.ndarray:
         bitorder="little",
     ).reshape(12, 8, 8)
 
-    # Mirror vertically if Black.
+    # Mirror vertically if Black so that the perspective player is always on the bottom.
     return planes if perspective_white else planes[:, ::-1, :]
+
+
+def history_frame(board: chess.Board, occurrences: int) -> NDArray[np.uint8]:
+    frame = np.zeros((TIME_STEP_LAYERS, 8, 8), dtype=np.uint8)
+    frame[:12] = piece_planes(board, perspective_white=True)
+    frame[12].fill(occurrences >= 2)
+    frame[13].fill(occurrences >= 3)
+
+    # Frames are shared between nodes.
+    frame.flags.writeable = False
+    return frame
+
+def initial_history(board: chess.Board) -> tuple[NDArray[np.uint8], ...]:
+    """Initialise a root's history, preserving full repetition context."""
+    historic = board.copy(stack=True)
+    frames = []
+
+    for _ in range(TIME_STEPS):
+        occurrences = (
+            3 if historic.is_repetition(3)
+            else 2 if historic.is_repetition(2)
+            else 1
+        )
+        frames.append(history_frame(historic, occurrences))
+
+        if not historic.move_stack:
+            break
+        historic.pop()
+
+    return tuple(frames)
+
+@dataclass(slots=True)
+class CachedPosition:
+    history: tuple[np.ndarray, ...]  # Newest first, fixed White perspective
+    children: dict[chess.Move, "CachedPosition"] = field(default_factory=dict)
 
 class RepetitionTracker:
     def __init__(self, board: chess.Board):
@@ -207,8 +233,8 @@ class RepetitionTracker:
         self.key_counts.update((key, ))
         self.key_stack: list[Hashable] = [key]
 
-        # Number of distinct positions seen at least twice.
-        self.num_repeated = 0
+        self.curr_cache = CachedPosition(history=initial_history(board))
+        self.cache_stack: list[CachedPosition] = []
 
         # Initialize at the beginning of the tracked history.
         if board.move_stack:
@@ -229,6 +255,8 @@ class RepetitionTracker:
 
             self.key_stack = self.key_stack[::-1]
 
+        # Number of distinct positions seen at least twice.
+        self.num_repeated = sum(count >= 2 for count in self.key_counts.values())
         self.board = board
 
     def push(self, move: chess.Move) -> None:
@@ -243,7 +271,20 @@ class RepetitionTracker:
         self.key_counts[key] = count + 1
         self.key_stack.append(key)
 
+        child = self.curr_cache.children.get(move)
+        if child is None:
+            # Previously untraversed move
+            frame = history_frame(self.board, self.key_counts[self.key_stack[-1]])
+            child = CachedPosition(history=(frame, *self.curr_cache.history[:7]))
+            self.curr_cache.children[move] = child
+
+        self.cache_stack.append(self.curr_cache)
+        self.curr_cache = child
+
     def pop(self) -> chess.Move:
+        if not self.cache_stack:
+            raise IndexError("Cannot pop before the tracker's initial position")
+
         key = self.key_stack.pop()
         count = self.key_counts[key]
 
@@ -255,6 +296,7 @@ class RepetitionTracker:
         else:
             self.key_counts[key] = count - 1
 
+        self.curr_cache = self.cache_stack.pop()
         return self.board.pop()
 
     def is_threefold(self) -> bool:

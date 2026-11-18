@@ -36,6 +36,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "game_type",
+        type=parse_game_type,
+        metavar=f"{','.join(game_types.keys())}",
+        help=f"Type of game to play ({','.join(game_types.keys())})",
+    )
+
+    parser.add_argument(
         "--rollouts",
         "-r",
         type=int,
@@ -79,15 +86,6 @@ def parse_args() -> argparse.Namespace:
         "--gpu",
         action="store_true",
         help="Use GPU for node evaluation (default: False)",
-    )
-
-    parser.add_argument(
-        "--game-type",
-        "-game",
-        type=parse_game_type,
-        default=ChessGame,
-        metavar=f"{','.join(game_types.keys())}",
-        help="Type of game to play (default: chess)",
     )
 
     parser.add_argument(

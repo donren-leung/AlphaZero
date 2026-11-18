@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
-from .ChessUtils import encode_move, decode_action, encode_chess, RepetitionTracker, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
+from .ChessUtils import encode_move, decode_action, encode_chess, history_frame, RepetitionTracker, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
 
 type Board = chess.Board
 type ModelInput = NDArray[np.uint8]
@@ -16,19 +16,22 @@ type ModelInput = NDArray[np.uint8]
 class CompactChessState:
     # FEN is the position up to 7 half-moves back
     # Zip of the following:
-    # Moves: Oldest first. Populates a partial history of the game.
-    # Repetitions. Newest first. counts occurences of position at step t
+    # Repetitions: Oldest first. Counts occurences of position at t (before move t).
+    # Moves: Oldest first. Populates a partial history of the game. One elem shorter than repetitions.
 
     fen: str
-    moves: tuple[str, ...]
     repetition_flags: tuple[int, ...]
+    moves: tuple[str, ...]
 
     def unpack(self) -> ModelInput:
         board = chess.Board(self.fen)
-        for uci in self.moves:
+        history_frames: list[NDArray[np.uint8]] = [history_frame(board, self.repetition_flags[0])]
+        for uci, repetitions in zip(self.moves, self.repetition_flags[1:], strict=True):
             board.push_uci(uci)
+            history_frames.append(history_frame(board, repetitions))
 
-        return encode_chess(board, self.repetition_flags)
+        # encode_chess expects reverse (newest first) order
+        return encode_chess(board, history_frames[::-1])
 
 class ChessState(GameStateBase[chess.Move]):
     row_count: ClassVar[int] = 8
@@ -96,7 +99,7 @@ class ChessState(GameStateBase[chess.Move]):
             return 0, False
 
     def encode_for_model(self, player: int=0) -> ModelInput:
-        return encode_chess(self.board)
+        return encode_chess(self.board, self.repetition_tracker.curr_cache.history)
 
     def to_compact_repr(self, player: int=0) -> CompactChessState:
         board = self.board.copy(stack=True)
@@ -105,26 +108,29 @@ class ChessState(GameStateBase[chess.Move]):
         repetition_flags: list[int] = []
 
         for i in range(8):
-            # Number of previous occurrences, capped at 2
+            # Total occurrences including this position, capped at 3.
             if board.is_repetition(3):
-                count = 2
+                count = 3
             elif board.is_repetition(2):
-                count = 1
+                count = 2
             else:
-                count = 0
+                count = 1
 
             repetition_flags.append(count)
 
             if i == 7 or not board.move_stack:
+                # Need N=8 repetition counts but only N-1 moves
+                # + starting position gets 8 positions.
                 break
 
             move = board.pop()
             moves.append(move.uci())
 
+        assert len(repetition_flags) == len(moves) + 1
         return CompactChessState(
             fen=board.fen(),
+            repetition_flags=tuple(reversed(repetition_flags)),
             moves=tuple(reversed(moves)),
-            repetition_flags=tuple(repetition_flags)
         )
 
     def __str__(self) -> str:
