@@ -324,3 +324,34 @@ class RepetitionTracker:
                 self.board.pop()
 
         return False
+
+    def purge_cache_except(self, selected_move: chess.Move, purge_keys: bool) -> None:
+        """
+        Discard all child cached positions except the one corresponding to kept_child.
+        Additionally, if given move is irreversible, discard all counts and keys in stack.
+        """
+        kept_child = self.curr_cache.children.get(selected_move)
+        pending = [node for node in self.curr_cache.children.values() if node is not kept_child]
+        self.curr_cache.children = {selected_move: kept_child} if kept_child is not None else {}
+
+        while pending:
+            node = pending.pop()
+            for child in node.children.values():
+                    pending.append(child)
+
+            node.children.clear()
+
+        if purge_keys:
+            self.key_counts.clear()
+            self.key_stack.clear()
+            self.num_repeated = 0
+
+    def clone_for_board(self, board: chess.Board) -> "RepetitionTracker":
+        clone = object.__new__(type(self))
+        clone.board = board
+        clone.key_counts = self.key_counts.copy()
+        clone.key_stack = self.key_stack.copy()
+        clone.num_repeated = self.num_repeated
+        clone.curr_cache = self.curr_cache
+        clone.cache_stack = self.cache_stack.copy()
+        return clone

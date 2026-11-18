@@ -38,9 +38,9 @@ class ChessState(GameStateBase[chess.Move]):
     col_count: ClassVar[int] = 8
 
     __slots__ = ["board", "repetition_tracker"]
-    def __init__(self, board: Board):
+    def __init__(self, board: Board, repetition_tracker: RepetitionTracker | None = None):
         self.board = board
-        self.repetition_tracker = RepetitionTracker(board)
+        self.repetition_tracker = repetition_tracker or RepetitionTracker(board)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         player = 1 if self.board.turn == chess.WHITE else -1
@@ -57,7 +57,10 @@ class ChessState(GameStateBase[chess.Move]):
             new_state.push_to_board(move)
             return new_state
         else:
+            irreversible = self.board.is_irreversible(move)
+            self.repetition_tracker.purge_cache_except(move, irreversible)
             self.push_to_board(move)
+            self.repetition_tracker.cache_stack.clear()
             return self
 
     def encode_move(self, move: chess.Move) -> int:
@@ -137,7 +140,9 @@ class ChessState(GameStateBase[chess.Move]):
         return str(self.board)
 
     def __copy__(self) -> 'ChessState':
-        return ChessState(self.board.copy())
+        board = self.board.copy()
+        tracker = self.repetition_tracker.clone_for_board(board)
+        return ChessState(board, tracker)
 
 class ChessGame(GameBase[ChessState]):
     action_size: ClassVar[int] = CHESS_ACTION_SIZE
