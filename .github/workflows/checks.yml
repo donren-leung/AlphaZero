@@ -28,8 +28,8 @@ jobs:
                   print(f"{name}=={version}")
           PY
           export PIP_CONSTRAINT="$RUNNER_TEMP/constraints.txt"
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -e . pytest mypy
+          python -m pip install -e . pytest mypy \
+            --find-links https://download.pytorch.org/whl/cpu/torch/
 
       - name: Run pytest
         run: python -m pytest
