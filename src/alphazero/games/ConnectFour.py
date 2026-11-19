@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -9,72 +9,111 @@ from .GameBase import GameBaseNumpy
 type State = NDArray[np.int8]
 
 class ConnectFourState(GameStateNumpyBase):
-    __slots__ = ["row_count", "col_count", "in_a_row"]
-    def __init__(self, state: State):
-        self.state = state
+    in_a_row: ClassVar[int] = 4
+
+    __slots__ = ["row_count", "col_count"]
+    def __init__(self, state: State, action_history: list[int], turn: Literal[1, -1]):
+        super().__init__(state, action_history.copy(), turn)
         self.row_count = state.shape[0]
         self.col_count = state.shape[1]
-        self.in_a_row = 4
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        return (self.state[0] == 0).astype(np.bool_)
+        return (self.board[0] == 0).astype(np.bool_)
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ConnectFourState':
-        row = np.max(np.where(self.state[:, action] == 0))
+        row = np.max(np.where(self.board[:, action] == 0))
 
+        self.switch_player()
         if copy:
-            new_state = np.copy(self.state)
+            new_state = np.copy(self.board)
             new_state[row, action] = player
-            return ConnectFourState(new_state)
+            return ConnectFourState(new_state, self.action_history + [action], self.turn)
         else:
-            self.state[row, action] = player
+            self.board[row, action] = player
+            self.action_history.append(action)
             return self
 
-    def get_value_and_terminated(self, action: int):
-        player: int
-        # Checks if a move that's just been made results in a win for that player
-        def check_win(self, action: int) -> bool:
-            nonlocal player
+    def push_to_board(self, move: int) -> None:
+        self.get_next_state(move, self.turn, copy=False)
 
-            non_zero_indices = np.where(self.state[:, action] != 0)[0]
-            assert non_zero_indices.size > 0, f"no pieces in column/{action=}"
+    def pop_board(self) -> int:
+        last_action = self.action_history.pop()
+        row = np.min(np.where(self.board[:, last_action] != 0))
+        assert self.board[row, last_action] != 0, "Trying to pop an empty square"
 
-            row = np.min(np.where(self.state[:, action] != 0))
-            column = action
-            player = self.state[row][column]
+        self.board[row, last_action] = 0
+        self.switch_player()
+        return last_action
 
-            def count(offset_row, offset_column):
-                for i in range(1, self.in_a_row):
-                    r = row + offset_row * i
-                    c = action + offset_column * i
-                    if (
-                        r < 0
-                        or r >= self.row_count
-                        or c < 0
-                        or c >= self.col_count
-                        or self.state[r][c] != player
-                    ):
-                        return i - 1
-                return self.in_a_row - 1
+    def _check_winner(self, action: int) -> int:
+        """
+        Checks if a move that's just been made results in a win for that player
+        """
+        non_zero_indices = np.where(self.board[:, action] != 0)[0]
+        assert non_zero_indices.size > 0, f"no pieces in column/{action=}"
 
-            return (
-                count(1, 0) >= self.in_a_row - 1 # vertical
-                or (count(0, 1) + count(0, -1)) >= self.in_a_row - 1 # horizontal
-                or (count(1, 1) + count(-1, -1)) >= self.in_a_row - 1 # top left diagonal
-                or (count(1, -1) + count(-1, 1)) >= self.in_a_row - 1 # top right diagonal
-            )
+        row = np.min(np.where(self.board[:, action] != 0))
+        column = action
+        player = self.board[row][column]
 
-        if check_win(self, action):
+        def count(offset_row, offset_column):
+            for i in range(1, self.in_a_row):
+                r = row + offset_row * i
+                c = action + offset_column * i
+                if (
+                    r < 0
+                    or r >= self.row_count
+                    or c < 0
+                    or c >= self.col_count
+                    or self.board[r][c] != player
+                ):
+                    return i - 1
+            return self.in_a_row - 1
+
+        return (
+            count(1, 0) >= self.in_a_row - 1 # vertical
+            or (count(0, 1) + count(0, -1)) >= self.in_a_row - 1 # horizontal
+            or (count(1, 1) + count(-1, -1)) >= self.in_a_row - 1 # top left diagonal
+            or (count(1, -1) + count(-1, 1)) >= self.in_a_row - 1 # top right diagonal
+        )
+
+    def _check_winner_full(self):
+        """
+        Check all rows, columns, and diagonals for either player's win.
+        Return the winning player (1 or -1), or 0 if no winner.
+        """
+        for action in range(self.col_count):
+            if self.board[self.row_count - 1][action] == 0:
+                # empty column
+                continue
+            if self._check_winner(action):
+                row = np.min(np.where(self.board[:, action] != 0))
+                return self.board[row][action]
+        return 0
+
+    def get_value_and_terminated(self):
+        if len(self.action_history) == 0:
+            winner = self._check_winner_full()
+        elif self._check_winner(self.action_history[-1]):
+            row = np.min(np.where(self.board[:, self.action_history[-1]] != 0))
+            winner = self.board[row][self.action_history[-1]]
+        else:
+            winner = 0
+
+        if winner != 0:
+            # The player who just moved is the winner, so the current player is the loser.
+            assert winner != self.turn
             return 1, True
-        elif not np.any(self.get_legal_actions()):
+        elif not np.any(self.board == 0):
             return 0, True
-        return 0, False
+        else:
+            return 0, False
 
     def __str__(self) -> str:
-        return str(self.state)
+        return str(self.board)
 
     def __copy__(self) -> 'ConnectFourState':
-        return ConnectFourState(np.copy(self.state))
+        return ConnectFourState(np.copy(self.board), self.action_history.copy(), self.turn)
 
 class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
     row_count: ClassVar[int] = 6
@@ -87,7 +126,7 @@ class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
 
     @classmethod
     def get_initial_state(cls) -> ConnectFourState:
-        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8))
+        return ConnectFourState(np.zeros((cls.row_count, cls.col_count), dtype=np.int8), [], 1)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
         return self.state.get_legal_actions()
@@ -98,8 +137,8 @@ class ConnectFourGame(GameBaseNumpy[ConnectFourState]):
     # def check_win(self, action: int) -> bool:
     #     return self.state.check_win(action)
 
-    def get_value_and_terminated(self, action: int):
-        return self.state.get_value_and_terminated(action)
+    def get_value_and_terminated(self):
+        return self.state.get_value_and_terminated()
 
     def __repr__(self) -> str:
         return "ConnectFour"

@@ -1,14 +1,18 @@
 import argparse
+from collections import Counter
+from pathlib import Path
 import queue
 import threading
 import time
+
+import numpy as np
 
 from alphazero.games.GameBase import GameBase
 from alphazero.games.TicTacToe import TicTacToeGame
 from alphazero.games.ConnectFour import ConnectFourGame
 from alphazero.games.Chess import ChessGame
 
-from .batching.AZ_GameWorker import GameWorker, mpQueueGen
+from .batching.Queues import mpQueueGen
 
 GameType = type[GameBase]
 game_types: dict[str, GameType] = {
@@ -32,6 +36,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "game_type",
+        type=parse_game_type,
+        metavar=f"{','.join(game_types.keys())}",
+        help=f"Type of game to play ({','.join(game_types.keys())})",
+    )
+
+    parser.add_argument(
         "--rollouts",
         "-r",
         type=int,
@@ -43,8 +54,8 @@ def parse_args() -> argparse.Namespace:
         "--processes",
         "-p",
         type=int,
-        default=4,
-        help="Number of node-evaluation worker processes (default: 4)",
+        default=1,
+        help="Number of node-evaluation worker processes (default: 1)",
     )
 
     parser.add_argument(
@@ -67,23 +78,38 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         "-b",
         type=int,
-        default=64,
-        help="GPU batch size for node evaluation (default: 64)",
+        default=256,
+        help="GPU batch size for supervised training (default: 256)",
+    )
+
+    parser.add_argument(
+        "--inference-max-batch-size",
+        "-ib",
+        type=int,
+        default=256,
+        help="GPU batch size for node evaluation (default: 256)",
+    )
+
+    parser.add_argument(
+        "--learning-rate",
+        "-lr",
+        type=float,
+        default=0.01,
+        help="Learning rate for the optimizer (default: 0.01)",
+    )
+
+    parser.add_argument(
+        "--weight-decay",
+        "-wd",
+        type=float,
+        default=1e-4,
+        help="Weight decay for the optimizer (default: 1e-4)",
     )
 
     parser.add_argument(
         "--gpu",
         action="store_true",
         help="Use GPU for node evaluation (default: False)",
-    )
-
-    parser.add_argument(
-        "--game-type",
-        "-game",
-        type=parse_game_type,
-        default=ConnectFourGame,
-        metavar=f"{','.join(game_types.keys())}",
-        help="Type of game to play (default: c4 (ConnectFour))",
     )
 
     parser.add_argument(
@@ -100,6 +126,44 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of epochs to train the model per iteration",
+    )
+
+    parser.add_argument(
+        "--blocks",
+        "-bl",
+        type=int,
+        default=9,
+        help="Number of residual blocks in the model (default: 9)",
+    )
+
+    parser.add_argument(
+        "--channels",
+        "-ch",
+        type=int,
+        default=256,
+        help="Number of channels in the model (default: 256)",
+    )
+
+    parser.add_argument(
+        "--head-channels",
+        "-hch",
+        type=int,
+        default=64,
+        help="Number of channels in the model heads (default: 64)",
+    )
+
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to a saved model to resume training from (default: None)",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for worker processes (default: 42)",
     )
 
     return parser.parse_args()
@@ -119,9 +183,11 @@ class ThreadSafeCounter:
         with self._lock:
             return self._value
 
+SLEEP_S = 0.1
 def metrics_daemon(
     stop_event: threading.Event,
-    metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
+    metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]],
+    eval_metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]],
     counter: ThreadSafeCounter,
     expected_results: int,
     print_interval_s: float = 2.5,
@@ -132,25 +198,40 @@ def metrics_daemon(
 
     Queue messages:
         (worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results)
+    Evaluation Queue messages:
+        (nodes, timings, batch_sizes)
     """
     latest_totals: dict[int, tuple[int, int, int, int, int]] = {}
     previous_totals: dict[int, tuple[int, int, int, int, int]] = {}
+
+    eval_records: list[tuple[int, list[tuple], dict]] = []
 
     interval_start = time.perf_counter()
     next_print = interval_start + print_interval_s
 
     while not stop_event.is_set():
         now = time.perf_counter()
-        timeout = max(0.0, next_print - now)
+        # timeout = max(0.0, next_print - now)
 
-        try:
-            worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(timeout=timeout)
-            latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
-        except queue.Empty:
-            pass
+        # Drain available evaluation metrics without blocking.
+        while True:
+            try:
+                record = eval_metrics_queue.get(block=False)
+                eval_records.append(record)
+            except queue.Empty:
+                break
+
+        for metrics_queue in metrics_queues:
+            for _ in range(10):  # Drain up to 10 messages per queue to avoid blocking
+                try:
+                    worker_id, total_moves, sent_batches, sent_requests, received_batches, received_results = metrics_queue.get(block=False)
+                    latest_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+                except queue.Empty:
+                    break
 
         now = time.perf_counter()
         if now < next_print:
+            stop_event.wait(min(SLEEP_S, next_print - now))
             continue
 
         elapsed = now - interval_start
@@ -184,6 +265,33 @@ def metrics_daemon(
             total_received_results += deltas[4]
 
             previous_totals[worker_id] = (total_moves, sent_batches, sent_requests, received_batches, received_results)
+
+        # Evaluation metrics
+        total_eval_nodes = 0
+        all_eval_timings: list[tuple] = []
+        batch_sizes_counter: Counter[int] = Counter()
+
+        for record in eval_records:
+            eval_nodes, eval_timings, eval_batch_sizes = record
+            total_eval_nodes += eval_nodes
+            all_eval_timings.extend(eval_timings)
+            batch_sizes_counter.update(eval_batch_sizes)
+
+        eval_node_rate = total_eval_nodes / elapsed if elapsed > 0 else 0.0
+        total_eval_batches = sum(batch_sizes_counter.values())
+        eval_batch_rate = total_eval_batches / elapsed if elapsed > 0 else 0.0
+        unique_batch_sizes = sorted(batch_sizes_counter.items())
+
+        # Timing statistics: mean and p95 per stage.
+        if all_eval_timings:
+            timings = np.asarray(all_eval_timings, dtype=np.float64)
+            mean_timings = np.mean(timings, axis=0)*1000
+            p95_timings = np.percentile(timings, 95, axis=0)*1000
+        else:
+            mean_timings = np.zeros(5)
+            p95_timings = np.zeros(5)
+
+        eval_records.clear()
 
         if worker_rec_node_rates:
             total_move_rate = total_moves_delta / elapsed
@@ -237,9 +345,22 @@ def metrics_daemon(
                 flush=True,
             )
 
+            print(
+                f"[Evaluation] "
+                f"{elapsed:1.1f}s :: "
+                f"{human_readable(eval_node_rate)} nps "
+                f"{human_readable(eval_batch_rate)} bps "
+                f":: batches: {unique_batch_sizes}"
+                f":: rec1 {mean_timings[0]:.1f}/{p95_timings[0]:.1f}ms "
+                f"rec2 {mean_timings[1]:.1f}/{p95_timings[1]:.1f}ms "
+                f"prp {mean_timings[2]:.1f}/{p95_timings[2]:.1f}ms "
+                f"compute {mean_timings[3]:.1f}/{p95_timings[3]:.1f}ms "
+                f"submit {mean_timings[4]:.1f}/{p95_timings[4]:.1f}ms",
+                flush=True,
+            )
+
         interval_start = now
         next_print = now + print_interval_s
-
 
 def metrics_daemon_CPU(
     stop_event: threading.Event,

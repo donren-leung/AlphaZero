@@ -1,4 +1,6 @@
-from typing import Sequence
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import Hashable, Sequence
 
 import chess
 import numpy as np
@@ -73,10 +75,10 @@ def encode_move(board: chess.Board, move: chess.Move, player: int) -> int:
     return (chess.square_file(source) * 8 + chess.square_rank(source)) * 73 + plane
 
 def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
-    """Decode an action, rejecting invalid, off-board, or illegal moves."""
+    """Decode an action, rejecting off-board moves but largely assumes move legality."""
     _check_player(board, player)
     if type(action) is not int or not 0 <= action < CHESS_ACTION_SIZE:
-        raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE})")
+        raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE}), got {action=}")
 
     position, plane = divmod(action, 73)
     source_file, source_rank = divmod(position, 8)
@@ -112,14 +114,9 @@ def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
         ):
             promotion = chess.QUEEN
 
-    move = chess.Move(from_sq, to_sq, promotion=promotion)
-    if move not in set(board.generate_legal_moves()):
-        raise ValueError(
-            f"Action {action} is not a canonical legal move: {move.uci()}"
-        )
-    return move
+    return chess.Move(from_sq, to_sq, promotion=promotion)
 
-def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> NDArray[np.uint8]:
+def encode_chess(board: chess.Board, history: Sequence[NDArray[np.uint8]]) -> NDArray[np.uint8]:
     """
     Accepts optional repetition history.
     repetitions[t] is the number of repetitions of pos t halfmoves ago.
@@ -136,32 +133,18 @@ def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> 
     # No progress clock (1); whole plane encoded
 
     is_white = board.turn
-
-    # Time step planes
     features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
-    history = board.copy(stack=TIME_STEPS - 1)
-    for ply in range(TIME_STEPS):
-        for square, piece in history.piece_map().items():
-            oriented = square if is_white else chess.square_mirror(square)
-            side = 0 if piece.color == is_white else CHESS_PIECE_LAYERS
-            plane = ply * TIME_STEP_LAYERS + side + piece.piece_type - 1
-            features[plane, chess.square_rank(oriented),
-                     chess.square_file(oriented)] = 1
 
-        if repetitions is not None:
-            assert ply < len(repetitions), "Repetition history is shorter than the number of halfmoves"
-            r2 = repetitions[ply] >= 2
-            r3 = repetitions[ply] >= 3
+    for t, frame in enumerate(history[:TIME_STEPS]):
+        dst = features[t * TIME_STEP_LAYERS:(t + 1) * TIME_STEP_LAYERS]
+
+        if board.turn == chess.WHITE:
+            dst[:] = frame
         else:
-            r2 = history.is_repetition(2)
-            r3 = history.is_repetition(3)
-
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START, :, :] = r2
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START + 1, :, :] = r3
-
-        if not history.move_stack:
-            break
-        history.pop()
+            # Swap piece ownership and mirror ranks.
+            dst[:6] = frame[6:12, ::-1, :]
+            dst[6:12] = frame[:6, ::-1, :]
+            dst[12:14] = frame[12:14]
 
     # Auxiliary planes
     for plane, color, kingside in (
@@ -179,3 +162,196 @@ def encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> 
     features[AUXILIARY_PLANE_START + 5, :, :] = board.halfmove_clock
 
     return features
+
+def piece_planes(board: chess.Board, perspective_white: bool) -> np.ndarray:
+    # Planes 1-6:  perspective player's pieces.
+    # Planes 7-12: opponent's pieces.
+    colors = (
+        (chess.WHITE, chess.BLACK)
+        if perspective_white
+        else (chess.BLACK, chess.WHITE)
+    )
+
+    masks = np.array(
+        [
+            board.pieces_mask(piece_type, color)
+            for color in colors
+            for piece_type in range(1, 7)
+        ],
+        dtype="<u8",
+    )
+
+    # Bit 0 is a1; reshape into [plane, rank, file].
+    planes = np.unpackbits(
+        masks.view(np.uint8).reshape(12, 8),
+        axis=1,
+        bitorder="little",
+    ).reshape(12, 8, 8)
+
+    # Mirror vertically if Black so that the perspective player is always on the bottom.
+    return planes if perspective_white else planes[:, ::-1, :]
+
+
+def history_frame(board: chess.Board, occurrences: int) -> NDArray[np.uint8]:
+    frame = np.zeros((TIME_STEP_LAYERS, 8, 8), dtype=np.uint8)
+    frame[:12] = piece_planes(board, perspective_white=True)
+    frame[12].fill(occurrences >= 2)
+    frame[13].fill(occurrences >= 3)
+
+    # Frames are shared between nodes.
+    frame.flags.writeable = False
+    return frame
+
+def initial_history(board: chess.Board) -> tuple[NDArray[np.uint8], ...]:
+    """Initialise a root's history, preserving full repetition context."""
+    historic = board.copy(stack=True)
+    frames = []
+
+    for _ in range(TIME_STEPS):
+        occurrences = (
+            3 if historic.is_repetition(3)
+            else 2 if historic.is_repetition(2)
+            else 1
+        )
+        frames.append(history_frame(historic, occurrences))
+
+        if not historic.move_stack:
+            break
+        historic.pop()
+
+    return tuple(frames)
+
+@dataclass(slots=True)
+class CachedPosition:
+    history: tuple[np.ndarray, ...]  # Newest first, fixed White perspective
+    children: dict[chess.Move, "CachedPosition"] = field(default_factory=dict)
+
+class RepetitionTracker:
+    def __init__(self, board: chess.Board):
+        key = board._transposition_key()
+        self.key_counts: Counter[Hashable] = Counter()
+        self.key_counts.update((key, ))
+        self.key_stack: list[Hashable] = [key]
+
+        self.curr_cache = CachedPosition(history=initial_history(board))
+        self.cache_stack: list[CachedPosition] = []
+
+        # Initialize at the beginning of the tracked history.
+        if board.move_stack:
+            switchyard: list[chess.Move] = []
+            while board.move_stack:
+                move = board.pop()
+                switchyard.append(move)
+
+                if board.is_irreversible(move):
+                    break
+
+                key = board._transposition_key()
+                self.key_counts.update((key, ))
+                self.key_stack.append(key)
+
+            while switchyard:
+                board.push(switchyard.pop())
+
+            self.key_stack = self.key_stack[::-1]
+
+        # Number of distinct positions seen at least twice.
+        self.num_repeated = sum(count >= 2 for count in self.key_counts.values())
+        self.board = board
+
+    def push(self, move: chess.Move) -> None:
+        self.board.push(move)
+
+        key = self.board._transposition_key()
+        count = self.key_counts.get(key, 0)
+
+        if count == 1:
+            self.num_repeated += 1
+
+        self.key_counts[key] = count + 1
+        self.key_stack.append(key)
+
+        child = self.curr_cache.children.get(move)
+        if child is None:
+            # Previously untraversed move
+            frame = history_frame(self.board, self.key_counts[self.key_stack[-1]])
+            child = CachedPosition(history=(frame, *self.curr_cache.history[:7]))
+            self.curr_cache.children[move] = child
+
+        self.cache_stack.append(self.curr_cache)
+        self.curr_cache = child
+
+    def pop(self) -> chess.Move:
+        if not self.cache_stack:
+            raise IndexError("Cannot pop before the tracker's initial position")
+
+        key = self.key_stack.pop()
+        count = self.key_counts[key]
+
+        if count == 2:
+            self.num_repeated -= 1
+
+        if count == 1:
+            del self.key_counts[key]
+        else:
+            self.key_counts[key] = count - 1
+
+        self.curr_cache = self.cache_stack.pop()
+        return self.board.pop()
+
+    def is_threefold(self) -> bool:
+        return self.key_counts[self.key_stack[-1]] >= 3
+
+    def can_claim_threefold(self) -> bool:
+        # Current position already occurred three times.
+        if self.is_threefold():
+            return True
+
+        # Without any repeated position in the history,
+        # no legal move can produce a third occurrence.
+        if self.num_repeated == 0:
+            return False
+
+        # Only when repetitions exist do we need to
+        # investigate next-move claims.
+        for move in self.board.generate_legal_moves():
+            self.board.push(move)
+            try:
+                key = self.board._transposition_key()
+                if self.key_counts.get(key, 0) >= 2:
+                    return True
+            finally:
+                self.board.pop()
+
+        return False
+
+    def purge_cache_except(self, selected_move: chess.Move, purge_keys: bool) -> None:
+        """
+        Discard all child cached positions except the one corresponding to kept_child.
+        Additionally, if given move is irreversible, discard all counts and keys in stack.
+        """
+        kept_child = self.curr_cache.children.get(selected_move)
+        pending = [node for node in self.curr_cache.children.values() if node is not kept_child]
+        self.curr_cache.children = {selected_move: kept_child} if kept_child is not None else {}
+
+        while pending:
+            node = pending.pop()
+            for child in node.children.values():
+                    pending.append(child)
+
+            node.children.clear()
+
+        if purge_keys:
+            self.key_counts.clear()
+            self.key_stack.clear()
+            self.num_repeated = 0
+
+    def clone_for_board(self, board: chess.Board) -> "RepetitionTracker":
+        clone = object.__new__(type(self))
+        clone.board = board
+        clone.key_counts = self.key_counts.copy()
+        clone.key_stack = self.key_stack.copy()
+        clone.num_repeated = self.num_repeated
+        clone.curr_cache = self.curr_cache
+        clone.cache_stack = self.cache_stack.copy()
+        return clone

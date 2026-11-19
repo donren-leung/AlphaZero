@@ -6,7 +6,7 @@ from typing import Any, Generic, TypeVar, ClassVar, Type, final, Literal
 from .GameStateBase import ModelInput, GameStateBase, GameStateNumpyBase
 
 import numpy as np
-from numpy import int8, bool_
+from numpy import bool_
 from numpy.typing import NDArray
 
 GameStateT = TypeVar('GameStateT', bound='GameStateBase')
@@ -51,9 +51,9 @@ class GameBase(Generic[GameStateT], ABC):
         ...
 
     @abstractmethod
-    def get_value_and_terminated(self, action: int) -> tuple[Literal[1], Literal[True]] | \
-                                                        tuple[Literal[0], Literal[True]] | \
-                                                        tuple[Literal[0], Literal[False]]:
+    def get_value_and_terminated(self) -> tuple[Literal[1], Literal[True]] | \
+                                        tuple[Literal[0], Literal[True]] | \
+                                        tuple[Literal[0], Literal[False]]:
         ...
 
     @final
@@ -66,6 +66,20 @@ class GameBase(Generic[GameStateT], ABC):
 
     @abstractmethod
     def encode_for_model(self) -> ModelInput:
+        ...
+
+    @abstractmethod
+    def parse_move_str(self, cmd: str) -> int:
+        """
+        Parse a move string (e.g. "e4" in chess) into an action index.
+        """
+        ...
+
+    @abstractmethod
+    def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
+        """
+        Print the legal moves in a human-readable format (e.g. "e4" in chess).
+        """
         ...
 
     @abstractmethod
@@ -85,11 +99,19 @@ class GameBaseNumpy(Generic[GameStateNumpyT], GameBase[GameStateNumpyT]):
     def __init__(self, state: GameStateNumpyT | None = None, starting_player: int=1) -> None:
        super().__init__(state, starting_player)
 
+    def parse_move_str(self, cmd: str) -> int:
+        return int(cmd)
+
+    def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
+        return [
+            str(i) for i in range(self.action_size) if legal_actions[i]
+        ]
+
     def encode_for_model(self) -> ModelInput:
         state = self.state.neutral_state(self.current_player)
         return np.stack([
-            state.state == -1,
-            state.state == 0,
-            state.state == 1,
+            state.board == -1,
+            state.board == 0,
+            state.board == 1,
         ]).astype(np.uint8, copy=False)
 

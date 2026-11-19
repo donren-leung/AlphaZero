@@ -1,0 +1,39 @@
+name: Python checks
+
+on: [push]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install project and check tools with CPU-only Torch
+        id: install
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/constraints.txt"
+          import tomllib
+
+          with open("poetry.lock", "rb") as lock:
+              for package in tomllib.load(lock)["package"]:
+                  name, version = package["name"], package["version"]
+                  if name == "torch":
+                      version = version.partition("+")[0] + "+cpu"
+                  print(f"{name}=={version}")
+          PY
+          export PIP_CONSTRAINT="$RUNNER_TEMP/constraints.txt"
+          python -m pip install -e . pytest mypy types-tqdm==4.70.0.20260906 \
+            --find-links https://download.pytorch.org/whl/cpu/torch/
+
+      - name: Run pytest
+        run: python -m pytest
+
+      - name: Run mypy
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m mypy src
