@@ -1,39 +1,66 @@
-# "Mastering" the games of TicTacToe, Connect Four, and Chess with AlphaZero
+# "Mastering"* the games of TicTacToe, Connect Four, and Chess with AlphaZero
 
 A high-performance implementation of AlphaZero [(Silver et al. 2017)](https://arxiv.org/abs/1712.01815), a reinforcement learning algorithm designed to master two-player, perfect-information games including TicTacToe, Connect Four, and Chess.
 
-AlphaZero iterates and improves its own model output based on a set of completed self-play games:
-- the result of the MCTS performed at each position (policy) and
-- the final result (value) from the perspective of the player-to-move.
+AlphaZero iterates and improves its own model output by completing self-play games using Monte-Carlo Tree Search (MCTS). These trajectories generate two supervised targets at each position:
+- the policy is the distribution of visits to each possible move by the MCTS, and
+- the value is the final result of the game, adjusted to the perspective of the player-to-move.
 
-This project is an extension of Robert Förster's course [AlphaZero from Scratch - Machine Learning Tutorial](https://www.youtube.com/watch?v=wuSQpLinRB4)
+This project is an extension of Robert Förster's course [AlphaZero from Scratch - Machine Learning Tutorial](https://www.youtube.com/watch?v=wuSQpLinRB4).
+
+> *WIP. This framework is functional but chess training is still ongoing. Further training and benchmarking are required to assess its performance.
+
+## Usage
+```sh
+poetry install
+
+# Run 8 self-play iterations of chess with MCTS rollouts of 400 and inferencing at b=256.
+# Initialise 34 CPU workers to manage 1024 games each. Train each iteration over 2 epochs at b=128.
+python3 -m alphazero.selfplay -r 400 -p 1 -gw 34 -gpw 1024 -b 128 -ib 256 --gpu -i 8 -e 2 chess
+```
 
 ## High-Throughput Pipeline
-The core challenge of AlphaZero is that many game trajectories are required to be generated. To achieve high throughput, multi-processed workers serve and fully saturate the GPU with batches of requests.
+The core challenge of AlphaZero is that many game trajectories are required to be generated: Deepmind used 2.3 TPU-years to train a model stronger than Stockfish 8. To achieve high throughput, multi-processed workers serve and fully saturate the GPU with batches of requests.
 
 ```
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###################
-thread/game ──► worker queue ────► group & dispatch ─|─► eval worker ──► re-batch ──|──► GPU
+thread/game ──► worker queue ────► batch & dispatch ─|─► eval worker ──► re-batch ──|──► GPU
                                                                                     |    estimates 
 thread/game ◄── worker inbox ◄──|─ group & dispatch ◄─── eval worker ◄── unbatch ◄──|──  policy & value
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###################
 ```
-Each game worker has potentially hundreds of threads. Each thread manages a game and the MCTS of the current position. The workers send batched requests to eval workers, which in turn batch up requests to the GPU.
+Each game worker has potentially hundreds of threads, where each thread manages a game and the MCTS instance of the current position. The workers send batched requests to eval workers, which in turn batch up requests to the GPU.
 
 On the other side, a similar process of unbatching and dispatching responses to the destination worker occurs.
 
 ## Results
-A metric thread in each worker reports back performance to the controller. On Connect Four, this implementation achieves ~25k nodes/s with 32 game workers and 4 eval workers on a 18C/36T Xeon 2697v4 and RTX 3070.
+I implemented metric reporting to monitor the performance of game and eval worker processes. On Connect Four, this implementation achieves ~25k nodes/s with 32 game workers and 4 eval workers on a 18C/36T Xeon 2697v4 and RTX 3070.
 
-Small and medium games (TicTacToe and Connect Four respectively) are an ideal test bed for prototyping and validating correctness. An effective neural net can be trained in a matter of minutes or hours.
+Small and medium games (TicTacToe and Connect Four respectively) are an ideal test bed for prototyping and validating correctness. A strong neural net can be trained in a matter of minutes or hours.
 
+### AlphaZero Chess
 I devised a protocol to allow for any two player perfect-information game to interface with my MCTS and AZ self-play framework, allowing me to wrap an external chess library, `python-chess`.
 
-On chess, the same computer achieves ~2k nodes/s, exposing inefficient overheads beyond using a deeper and wider CNN. I have explored several optimisations: reusing tree statistics for subsequent MCTS, selective deep search for a subset of positions, lazy instantiation of nodes, and reduced copying of the `Board` object.
+On chess, the first iteration reached only ~2k nodes/s. Inefficient overheads were caused beyond using a bigger CNN model. I subsequently implemented several optimisations, some improving node throughput itself, others increasing node efficiency. These included reusing tree statistics for subsequent MCTS, selective deep search for a subset of positions, lazy instantiation of nodes, and reduced copying of the `Board` object.
 
-These experiments have improved the throughput to ~8k nodes/s, tapering off as games finish and batch size reduces. Consolidating games to fewer workers would fix this and save 1-2 hours. One iteration of 35k self-play games lasted a little over a day and evaluated 600M nodes across 2M training positions. A further 6M non-training positions were fast-searched which reduced total compute by a factor of 9/16. 100M nodes worth of search was carried over from previous MCTS trees. Subsequent iterations complete faster with the model making moves with more purpose. Training is still on-going; code and results coming soon.
+These experiments improved the throughput to ~8k nodes/s, tapering off as games finish and batch size reduces. I further introduced both chess-specific and general refactors to increase efficiency across GPU/CPU/RAM. Key optimisations included:
 
-![MCTS node evaluation metrics over iteration 001](./assets/iter001.chess_r200_p1_gw35_gpw1024_b64_e4_resume_chess_r40_p4_gw32_gpw256_b128_e4_model_000.png)
+- NN inference. fp16 inference, compiled model execution using torch.compile, and improved batching efficiency during times with fewer active games remaining.
+
+- MCTS optimisation. Accelerated UCB calculations using Numba JIT compilation, and removal of game-state copies in each MCTS node in favour of applying and undoing moves during tree traversal.
+
+- Chess-specific optimisations. Efficient repetition detection using position hashes, and cached historical board-state planes for NN input encoding.
+
+This new version achieves a sustained 17k nodes/s throughput, with 20k possible. And the tail end is noticeably shorter.
+<!-- One iteration of 35k self-play games lasted a little over a day and evaluated 600M nodes across 2M training positions. A further 6M non-training positions were fast-searched which reduced total compute by a factor of 9/16. 100M nodes worth of search was carried over from previous MCTS trees. Subsequent iterations complete faster with the model making moves with more purpose. Training is still on-going; code and results coming soon. -->
+
+![MCTS node evaluation metrics over iteration 011](./assets/iter008.chess_r200_p1_gw35_gpw1024_b128_e2_resume_chess_r200_p1_gw35_gpw1024_b64_e4_resume_chess_r40_p4_gw32_gpw256_b128_e4_model_000_model_003.png)
+
+Fig 1. Acutally iteration 11 (8th iteration after resuming from a four iteration run)
+
+![MCTS node evaluation metrics over iteration 012 (overhaul)](./assets/iter012.chess_r400_p1_gw34_gpw1024_b128_e2_resume_chess_r200_p1_gw35_gpw1024_b128_e2_resume_chess_r200_p1_gw35_gpw1024_b64_e4_resume_chess_r40_p4_gw32_gpw256_b128_e4_model_000_model_003_model_011.png)
+
+Fig 2. Actually iteration 12 (1st iteration after resuming from iteration 11)
 
 ## Future Directions
 ### Faster Training and Inference
