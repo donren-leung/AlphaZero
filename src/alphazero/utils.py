@@ -1,5 +1,6 @@
 import argparse
 from collections import Counter
+import json
 from pathlib import Path
 import queue
 import threading
@@ -13,6 +14,10 @@ from alphazero.games.ConnectFour import ConnectFourGame
 from alphazero.games.Chess import ChessGame
 
 from .batching.Queues import mpQueueGen
+from .models.model import (
+    MODEL_ARCHITECTURES, DEFAULT_ARCHITECTURE,
+    DEFAULT_BLOCKS, DEFAULT_CHANNELS, DEFAULT_HEAD_CHANNELS
+)
 
 GameType = type[GameBase]
 game_types: dict[str, GameType] = {
@@ -29,6 +34,50 @@ def parse_game_type(value: str) -> GameType:
             f"invalid game type {value!r}; "
             f"choose from: {', '.join(game_types)}"
         )
+
+def training_model_args(args: argparse.Namespace) -> dict:
+    game_dims = {
+        "game_input_channels": args.game_type.input_channels,
+        "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
+        "game_action_size": args.game_type.action_size,
+    }
+    saved = {}
+    if args.resume is not None:
+        metadata_path = args.resume.expanduser().resolve().with_name("args.json")
+        if metadata_path.is_file():
+            with metadata_path.open() as f:
+                saved = json.load(f)
+
+            # Backwards compatibility with pre-factory args.json files
+            # Implied ResNet architecture if field is not present.
+            saved.setdefault("architecture", DEFAULT_ARCHITECTURE)
+            # Resuming from a checkpoint, ensure past model input/output shapes are compatible.
+            for key, value in game_dims.items():
+                if key in saved and saved[key] != value:
+                    raise ValueError(f"Checkpoint {key}={saved[key]} conflicts with the selected game ({value})")
+
+    model_args = dict(game_dims)
+    for key, field, default in (
+        ("architecture", args.architecture, DEFAULT_ARCHITECTURE),
+        ("num_resBlocks", args.blocks, DEFAULT_BLOCKS),
+        ("num_channels", args.channels, DEFAULT_CHANNELS),
+        ("head_hidden_size", args.head_channels, DEFAULT_HEAD_CHANNELS),
+    ):
+        if key in saved:
+            if field is not None and saved[key] != field:
+                raise ValueError(f"Requested {key}={field} conflicts with checkpoint {key}={saved[key]}")
+            model_args[key] = saved[key]
+        else:
+            model_args[key] = field if field is not None else default
+
+    return {
+        **model_args,
+        "batch_size": args.batch_size,
+        "inference_max_batch_size": args.inference_max_batch_size,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "random_seed": args.seed
+    }
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -129,27 +178,36 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--architecture",
+        "-a",
+        type=str,
+        choices=MODEL_ARCHITECTURES.keys(),
+        default=None,
+        help="Model architecture (default: resnet for new runs, saved architecture on resume)",
+    )
+
+    parser.add_argument(
         "--blocks",
         "-bl",
         type=int,
-        default=9,
-        help="Number of residual blocks in the model (default: 9)",
+        default=None,
+        help=f"Number of residual blocks in the model (default: {DEFAULT_BLOCKS})",
     )
 
     parser.add_argument(
         "--channels",
         "-ch",
         type=int,
-        default=256,
-        help="Number of channels in the model (default: 256)",
+        default=None,
+        help=f"Number of channels in the model (default: {DEFAULT_CHANNELS})",
     )
 
     parser.add_argument(
         "--head-channels",
         "-hch",
         type=int,
-        default=64,
-        help="Number of channels in the model heads (default: 64)",
+        default=None,
+        help=f"Number of channels in the model heads (default: {DEFAULT_HEAD_CHANNELS})",
     )
 
     parser.add_argument(

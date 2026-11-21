@@ -1,68 +1,29 @@
 import torch.nn as nn
-import torch.nn.functional as F
 
-class ResNet(nn.Module):
-    def __init__(self,
-                 game_input_channels: int,
-                 game_spatial_size: int,
-                 game_action_size: int,
-                 num_resBlocks: int,
-                 num_channels: int,
-                 head_hidden_size: int,
+from .CNNs import ResNet, SE_ResNet
+
+DEFAULT_ARCHITECTURE = "resnet"
+MODEL_ARCHITECTURES: dict[str, type[nn.Module]] = {
+    "resnet": ResNet,
+    "se_resnet": SE_ResNet
+}
+
+DEFAULT_BLOCKS = 9
+DEFAULT_CHANNELS = 256
+DEFAULT_HEAD_CHANNELS = 256
+
+def create_model(*,
+                 architecture: str = DEFAULT_ARCHITECTURE,
                  state_dict: dict | None = None,
-                 **kwargs
-    ):
-        super().__init__()
-        self.startBlock = nn.Sequential(
-            nn.Conv2d(game_input_channels, num_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_channels),
-            nn.ReLU()
-        )
+                 **model_args) -> nn.Module:
+    try:
+        model_type = MODEL_ARCHITECTURES[architecture]
+    except KeyError:
+        raise ValueError(
+            f"Unknown model architecture {architecture!r}. Choose from {', '.join(MODEL_ARCHITECTURES)}."
+        ) from None
 
-        self.backBone = nn.ModuleList(
-            [ResBlock(num_channels) for _ in range(num_resBlocks)]
-        )
-
-        self.policyHead = nn.Sequential(
-            nn.Conv2d(num_channels, head_hidden_size, kernel_size=3, padding=1),
-            nn.BatchNorm2d(head_hidden_size),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(head_hidden_size * game_spatial_size, game_action_size)
-        )
-
-        self.valueHead = nn.Sequential(
-            nn.Conv2d(num_channels, head_hidden_size, kernel_size=3, padding=1),
-            nn.BatchNorm2d(head_hidden_size),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(head_hidden_size * game_spatial_size, 1),
-            nn.Tanh()
-        )
-
-        if state_dict is not None:
-            self.load_state_dict(state_dict)
-
-    def forward(self, x):
-        x = self.startBlock(x)
-        for resBlock in self.backBone:
-            x = resBlock(x)
-        policy = self.policyHead(x)
-        value = self.valueHead(x)
-        return policy, value
-
-
-class ResBlock(nn.Module):
-    def __init__(self, num_hidden):
-        super().__init__()
-        self.conv1 = nn.Conv2d(num_hidden, num_hidden, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(num_hidden)
-        self.conv2 = nn.Conv2d(num_hidden, num_hidden, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(num_hidden)
-
-    def forward(self, x):
-        residual = x
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = self.bn2(self.conv2(x))
-        x = F.relu(x + residual)
-        return x
+    model = model_type(**model_args)
+    if state_dict is not None:
+        model.load_state_dict(state_dict)
+    return model

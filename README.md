@@ -25,6 +25,9 @@ python3 -m alphazero.main --s -w artifacts/connectfour_r30_p1_gw12_gpw512_b128_e
 # Run 8 self-play iterations of chess with MCTS rollouts of 400 and inferencing at b=256.
 # Initialise 34 CPU workers to manage 1024 games each. Train each iteration over 2 epochs at b=128.
 python3 -m alphazero.selfplay -r 400 -p 1 -gw 34 -gpw 1024 -b 128 -ib 256 --gpu -i 8 -e 2 chess
+
+# Overrides default ResBlocks for Squeeze-and-Excite Blocks.
+python3 -m alphazero.selfplay c4 --architecture se_resnet --blocks 6 --channels 64
 ```
 
 ## High-Throughput Pipeline

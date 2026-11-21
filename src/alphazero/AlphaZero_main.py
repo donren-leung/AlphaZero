@@ -1,5 +1,4 @@
 import argparse
-from collections import Counter
 import multiprocessing as mp
 import json
 import re
@@ -21,8 +20,8 @@ from .batching.Queues import mpQueueGen
 from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase, CompactRepr
 from .MCTS.MCTS_AlphaZero import MCTS_Factory
-from .models.model import ResNet
-from .utils import parse_args, metrics_daemon, ThreadSafeCounter
+from .models.model import DEFAULT_ARCHITECTURE, create_model
+from .utils import parse_args, training_model_args, metrics_daemon, ThreadSafeCounter
 
 GameStateT = TypeVar("GameStateT", bound=GameStateBase)
 
@@ -131,6 +130,9 @@ class AlphaZero:
             f"_b{args.batch_size}"
             f"_e{args.epochs}"
         )
+        architecture = model_args.get("architecture", DEFAULT_ARCHITECTURE)
+        if architecture != DEFAULT_ARCHITECTURE:
+            settings_name += f"_{architecture}"
         if args.resume is not None:
             settings_name += f"_resume_{args.resume.parent.name}_{args.resume.stem}"
 
@@ -175,9 +177,8 @@ class AlphaZero:
 
             print(f"Resumed from {model_path}")
 
-        self.model_args["state_dict"] = self.model.state_dict()
-
         args_payload = {k: v for k, v in model_args.items() if k not in ("batch_size", "state_dict")}
+        args_payload["architecture"] = architecture
         args_payload["resume_from"] = (str(args.resume.expanduser().resolve()) if args.resume is not None else None)
 
         args_path = self.artifact_dir / "args.json"
@@ -197,8 +198,8 @@ class AlphaZero:
                   TARGET_GAME_WORKERS: int,
                   GAME_WORKER_GAMES: int,
                   RANDOM_SEED: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
-        self.model_args["state_dict"] = self.model.state_dict()
-        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args, RANDOM_SEED)
+        worker_args = {**self.model_args, "state_dict": self.model.state_dict()}
+        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, worker_args, RANDOM_SEED)
 
     def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
         random.shuffle(memory)
@@ -274,23 +275,8 @@ def print_cuda_memory(label: str):
 
 def main():
     args = parse_args()
-
-    model_args = {
-        "game_input_channels": args.game_type.input_channels,
-        "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
-        "game_action_size": args.game_type.action_size,
-        "num_resBlocks": args.blocks,
-        "num_channels": args.channels,
-        "head_hidden_size": args.head_channels,
-        "batch_size": args.batch_size,
-        "inference_max_batch_size": args.inference_max_batch_size,
-        "learning_rate": args.learning_rate,
-        "weight_decay": args.weight_decay,
-        "state_dict": None,
-        "random_seed": args.seed
-    }
-
-    model = ResNet(**model_args)
+    model_args = training_model_args(args)
+    model = create_model(**model_args)
     optimizer = torch.optim.AdamW(model.parameters(), lr=model_args["learning_rate"], weight_decay=model_args["weight_decay"])
 
     az = AlphaZero(args, model, optimizer, model_args)

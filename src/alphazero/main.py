@@ -17,7 +17,7 @@ from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase
 # from .MCTS.MCTS_multichild import MCTS_Factory
 from .MCTS.MCTS_AlphaZero import MCTS_Factory
-from .models.model import ResNet
+from .models.model import create_model
 from .utils import parse_game_type, game_types
 
 GameStateT = TypeVar('GameStateT', bound='GameStateBase')
@@ -48,7 +48,7 @@ def main(args) -> None:
     game: GameBase[Any] = args.game_type()
 
     MCTS_factory: MCTS_Factory[Any, Any] | None = None
-    model: ResNet | None = None
+    model: torch.nn.Module | None = None
 
     if not args.both_human:
         if args.model_args is None:
@@ -64,8 +64,8 @@ def main(args) -> None:
         with open(model_args_path, "r") as f:
             model_args = json.load(f)
 
-        model = ResNet(**model_args)
-        model.load_state_dict(torch.load(args.model))
+        model = create_model(**model_args)
+        model.load_state_dict(torch.load(args.model, map_location="cpu", weights_only=True))
         model.to("cuda")
         model.eval()
 
