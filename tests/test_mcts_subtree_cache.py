@@ -66,6 +66,7 @@ def test_cached_full_search_matches_cold_search(retained_position):
     _, _, cold = worker.search_move(0, game, None, np.random.default_rng(seed), fast=False)
     cold_requests = evaluator.call_count
     requests_before_cached_search = worker.full_requested_evals
+    terminals_before_cached_search = worker.full_terminal_evals
     cold_target = game.history["MCTS_results"][-1]
     evaluator.reset_mock()
 
@@ -74,6 +75,8 @@ def test_cached_full_search_matches_cold_search(retained_position):
     assert 0 < evaluator.call_count <= cold_requests - 2
     assert worker.full_cached_evals == cold_requests - evaluator.call_count
     assert worker.full_requested_evals - requests_before_cached_search == evaluator.call_count
+    terminal_rounds = worker.full_terminal_evals - terminals_before_cached_search
+    assert worker.full_cached_evals + terminal_rounds + evaluator.call_count == worker.MCTS_factory.rollouts + 1
     assert worker.full_moves == 3
     assert cached.root is not retained
     assert cached.root.ints[1].sum() == worker.MCTS_factory.rollouts
@@ -94,7 +97,7 @@ def test_cached_full_search_matches_cold_search(retained_position):
 def test_fast_search_reuses_visits_and_skips_training_example(retained_position, fast_factor):
     worker, _, game, retained = retained_position
     worker.MCTS_factory.fast_rollouts_factor = fast_factor
-    previous_requests = worker.full_requested_evals
+    full_counts = (worker.full_moves, worker.full_cached_evals, worker.full_terminal_evals, worker.full_requested_evals)
     old_visits = retained.visits
     raw_priors = retained.floats[0].copy()
     _, _, search = worker.search_move(0, game, retained, np.random.default_rng(2), fast=True)
@@ -106,7 +109,7 @@ def test_fast_search_reuses_visits_and_skips_training_example(retained_position,
     assert worker.fast_budget_rounds == search.num_rollouts(fast=True) + 1
     assert worker.fast_skipped_rounds == worker.fast_budget_rounds - new_rounds
     assert worker.fast_moves == 1
-    assert worker.full_requested_evals == previous_requests
+    assert (worker.full_moves, worker.full_cached_evals, worker.full_terminal_evals, worker.full_requested_evals) == full_counts
     np.testing.assert_array_equal(search.root.floats[0], raw_priors)
     assert len(game.history["MCTS_results"]) == 1
 
@@ -120,6 +123,7 @@ def test_terminal_backups_do_not_count_as_model_evaluations(worker_evaluator):
     assert search.root.visits == worker.MCTS_factory.rollouts + 1
     assert worker.full_requested_evals == evaluator.call_count == 1
     assert worker.full_cached_evals == 0
+    assert worker.full_terminal_evals == worker.MCTS_factory.rollouts
 
 
 def test_worker_publishes_final_metrics_after_games_finish(worker_evaluator, monkeypatch):
@@ -134,4 +138,6 @@ def test_worker_publishes_final_metrics_after_games_finish(worker_evaluator, mon
     assert worker.output_games.put.call_count == 2
     full_moves = sum(len(call.args[0][1].history["states"]) for call in worker.output_games.put.call_args_list)
     assert totals.full_moves == full_moves
+    full_rounds = totals.full_cached_evals + totals.full_terminal_evals + totals.full_requested_evals
+    assert full_rounds == full_moves * (worker.MCTS_factory.rollouts + 1)
     assert totals.fast_moves + full_moves == totals.moves == worker.total_moves

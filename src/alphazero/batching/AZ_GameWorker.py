@@ -238,10 +238,10 @@ class GameWorker(Generic[GameStateT], object):
         MCTS_instance = self.MCTS_factory.make_instance(game=game, root=previous_root if fast else None)
 
         try:
-            budget = MCTS_instance.num_rollouts(fast)
-            inherited_visits = MCTS_instance.root.visits
+            # A fresh root needs one expansion round before rounds can visit its children.
+            round_budget = 1 + MCTS_instance.num_rollouts(fast)
             cached_evals = requested_evals = terminal_evals = 0
-            while MCTS_instance.root.visits <= budget:
+            while MCTS_instance.root.visits < round_budget:
                 node, result = MCTS_instance.one_round_batch(thread_id, cache_root)
                 if isinstance(result, AZ_NodeRequest):
                     result = self._evaluate_leaf(result)
@@ -278,8 +278,9 @@ class GameWorker(Generic[GameStateT], object):
             sparse_probs = root.ints[1].astype(np.float32)
             sparse_probs /= sparse_probs.sum(dtype=np.float32)
 
-            # Only saving history for non-fast searches.
+            rounds_run = cached_evals + terminal_evals + requested_evals
             if not fast:
+                assert rounds_run == round_budget, f"Full search counted {rounds_run} of {round_budget} rounds"
                 game.history['states'].append(game.state.to_compact_repr(game.current_player))
                 game.history['MCTS_results'].append(SparseLegalPolicy(
                     legal_actions=legal_actions_arr,
@@ -290,11 +291,9 @@ class GameWorker(Generic[GameStateT], object):
 
             with self.metrics_lock:
                 if fast:
-                    # Without tree reuse, fast search would have taken one round to expand the root,
-                    # followed by `budget` rounds that visit a child.
                     self.fast_moves += 1
-                    self.fast_budget_rounds += budget + 1
-                    self.fast_skipped_rounds += min(inherited_visits, budget + 1)
+                    self.fast_budget_rounds += round_budget
+                    self.fast_skipped_rounds += round_budget - rounds_run
                 else:
                     self.full_moves += 1
                     self.full_cached_evals += cached_evals
