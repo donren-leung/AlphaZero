@@ -1,11 +1,13 @@
 import torch.nn as nn
 
-from .CNNs import ResNet, SE_ResNet
+from .CNNs import ResNet, SE_ResNet, SlimPolicy, SlimSE_ResNet
 
 DEFAULT_ARCHITECTURE = "resnet"
 MODEL_ARCHITECTURES: dict[str, type[nn.Module]] = {
     "resnet": ResNet,
-    "se_resnet": SE_ResNet
+    "se_resnet": SE_ResNet,
+    "slim_resnet": SlimPolicy,
+    "slim_se_resnet": SlimSE_ResNet,
 }
 
 DEFAULT_BLOCKS = 9

@@ -36,7 +36,8 @@ def parse_game_type(value: str) -> GameType:
         )
 
 def training_model_args(args: argparse.Namespace) -> dict:
-    game_dims = {
+    game_properties = {
+        "game_type_str": args.game_type.__name__.removesuffix("Game").lower(),
         "game_input_channels": args.game_type.input_channels,
         "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
         "game_action_size": args.game_type.action_size,
@@ -51,12 +52,16 @@ def training_model_args(args: argparse.Namespace) -> dict:
             # Backwards compatibility with pre-factory args.json files
             # Implied ResNet architecture if field is not present.
             saved.setdefault("architecture", DEFAULT_ARCHITECTURE)
+            # Similarly for game_type
+            prefix = str(metadata_path.parent.name.partition("_")[0])
+            saved.setdefault("game_type_str", prefix)
+
             # Resuming from a checkpoint, ensure past model input/output shapes are compatible.
-            for key, value in game_dims.items():
+            for key, value in game_properties.items():
                 if key in saved and saved[key] != value:
                     raise ValueError(f"Checkpoint {key}={saved[key]} conflicts with the selected game ({value})")
 
-    model_args = dict(game_dims)
+    model_args = dict(game_properties)
     for key, field, default in (
         ("architecture", args.architecture, DEFAULT_ARCHITECTURE),
         ("num_resBlocks", args.blocks, DEFAULT_BLOCKS),
@@ -143,8 +148,8 @@ def parse_args() -> argparse.Namespace:
         "--learning-rate",
         "-lr",
         type=float,
-        default=0.01,
-        help="Learning rate for the optimizer (default: 0.01)",
+        default=0.001,
+        help="Learning rate for the optimizer (default: 0.001)",
     )
 
     parser.add_argument(

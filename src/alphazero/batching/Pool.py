@@ -132,7 +132,7 @@ class GPU_AZ_Worker(object):
         collector_thread.start()
 
         window_start = time.perf_counter()
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
             while True:
                 item = self.ready_batches.get()
                 if item is None:

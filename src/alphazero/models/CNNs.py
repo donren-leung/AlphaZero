@@ -86,3 +86,53 @@ class ResNet(nn.Module):
 
 class SE_ResNet(ResNet):
     block_type = SE_ResBlock
+
+class FileRankPlaneFlatten(nn.Module):
+    def forward(self, x):
+        # (B, planes, rank, file)
+        # -> (B, file, rank, planes)
+        return x.permute(0, 3, 2, 1).reshape(x.shape[0], -1)
+
+class SlimPolicy(ResNet):
+    def __init__(self,
+                 game_input_channels: int,
+                 game_spatial_size: int,
+                 game_action_size: int,
+                 num_resBlocks: int,
+                 num_channels: int,
+                 head_hidden_size: int,
+                 state_dict: dict | None = None,
+                 **kwargs
+    ):
+        super().__init__(
+            game_input_channels=game_input_channels,
+            game_spatial_size=game_spatial_size,
+            game_action_size=game_action_size,
+            num_resBlocks=num_resBlocks,
+            num_channels=num_channels,
+            head_hidden_size=head_hidden_size,
+            state_dict=None,
+            **kwargs
+        )
+
+        game_type = kwargs["game_type_str"]
+        if game_type in ('chess', 'tictactoe'):
+            # Games with spatial action spaces can use 1x1 conv to reduce channels
+            # before flattening, dramatically reducing params.
+            assert game_action_size % game_spatial_size == 0
+
+            flatten = FileRankPlaneFlatten() if game_type == 'chess' else nn.Flatten()
+
+            self.policyHead = nn.Sequential(
+                nn.Conv2d(num_channels, head_hidden_size, kernel_size=1),
+                nn.BatchNorm2d(head_hidden_size),
+                nn.ReLU(),
+                nn.Conv2d(head_hidden_size, game_action_size // game_spatial_size, kernel_size=1),
+                flatten
+            )
+
+        if state_dict is not None:
+            self.load_state_dict(state_dict)
+
+class SlimSE_ResNet(SlimPolicy, SE_ResNet):
+    pass

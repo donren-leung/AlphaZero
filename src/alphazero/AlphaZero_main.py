@@ -130,7 +130,7 @@ class AlphaZero:
             f"_b{args.batch_size}"
             f"_e{args.epochs}"
         )
-        architecture = model_args.get("architecture", DEFAULT_ARCHITECTURE)
+        architecture = model_args["architecture"]
         if architecture != DEFAULT_ARCHITECTURE:
             settings_name += f"_{architecture}"
         if args.resume is not None:
