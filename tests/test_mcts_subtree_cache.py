@@ -8,6 +8,18 @@ from alphazero.batching.NodeBatch import AZ_NodeRequest, SparseLegalPolicy
 from alphazero.games.TicTacToe import TicTacToeGame
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory
 
+"""Test subtree reuse across consecutive self-play moves.
+
+A full search starts with fresh visit counts and uses the retained child
+as a cache of network evaluations. With a deterministic evaluator and the
+same random seed, the cached and cold searches produce identical root
+statistics and recorded policy and value. The cached search issues fewer
+evaluator requests in this position.
+
+A fast search uses the retained child as its root and counts inherited
+visits toward its rollout budget, adds no Dirichlet noise to the new root
+priors, and it records no training example.
+"""
 
 def evaluate(request: AZ_NodeRequest) -> SparseLegalPolicy:
     actions = np.flatnonzero(request.legal_mask).astype(np.uint16)

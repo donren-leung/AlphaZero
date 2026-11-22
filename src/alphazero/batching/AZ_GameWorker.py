@@ -232,6 +232,10 @@ class GameWorker(Generic[GameStateT], object):
                     node.backpropogate(1, result.value, True, MCTS_instance.game_state)
                     continue
 
+                # Introduce Dirichlet noise to root node for exploration
+                # but only if in full search mode (want to maximise strength in fast). In other words:
+                # Fast mode inherits a bit of the dirichlet noise from previous root through previously done work.
+                # Full mode draws its own noise.
                 probs = result.probs
                 if node is MCTS_instance.root and not fast:
                     alpha = self.MCTS_factory.DIRICHLET_CONST / probs.size
