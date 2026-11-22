@@ -105,12 +105,16 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         else:
             return self.rollouts
 
-    def one_round_batch(self, thread_id: int) -> \
-                            tuple[Node, AZ_NodeRequest] | \
-                            tuple[Node, SparseLegalPolicy]:
+    def one_round_batch(self, thread_id: int, cache_root: Node[GameStateT, MoveT] | None = None) -> \
+                            tuple[Node[GameStateT, MoveT], AZ_NodeRequest] | \
+                            tuple[Node[GameStateT, MoveT], SparseLegalPolicy]:
         """
-        Returns a leaf node and a request for the model to evaluate the leaf node's state.
-        This state is encoded in the neutral player's perspective.
+        Selects a leaf node and returns:
+        - if terminal, the terminal value.
+        - if cached, the cached evaluation.
+        - otherwise, a request for the model of the leaf, encoded in the neutral player's perspective.
+
+        cache_root is the Node of the selected child from a prior MCTS instance.
         """
         # Selection:
         # Get to a leaf node. (A leaf is any non-terminal node i.e. has potential
@@ -118,8 +122,14 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
         # If not currently a leaf node, traverse to child of current
         # which maximises UCB score.
         curr = self.root
+        curr_cached = cache_root
         while not curr.is_leafnode():
             curr = curr.select(self.game_state, self.MCTS_factory.exploration)
+            if curr_cached is not None and curr_cached.children is not None:
+                # Selection path follows an existant tree in cache
+                # Parent's indices of children are the same in both trees.
+                assert curr.parent_index is not None
+                curr_cached = curr_cached.children[curr.parent_index] if curr_cached.children else None
 
         # (Now at a leaf node)
         # Expansion:
@@ -138,6 +148,13 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             if self.MCTS_factory.debug >= 2:
                 logging.debug(f"using cache value {curr.value}")
             return curr, SparseLegalPolicy.value_only(curr.value)
+
+        if curr_cached is not None and curr_cached.network_value is not None:
+            # Can reuse the evaluation (priors of its children + value + legal indices)
+            assert curr_cached.ints is not None and curr_cached.floats is not None
+            return curr, SparseLegalPolicy(
+                curr_cached.ints[0], curr_cached.floats[0], curr_cached.network_value
+            )
 
         if curr.parent_move is not None:
             reward, terminated = self.game_state.get_value_and_terminated()
@@ -176,7 +193,7 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
                         thread_idxs=np.array([0])
                     ).unpack()[0]
 
-                node.expand(sparse_legal_policy.legal_actions, sparse_legal_policy.probs)
+                node.expand(sparse_legal_policy.legal_actions, sparse_legal_policy.probs, sparse_legal_policy.value)
                 node.backpropogate(1, sparse_legal_policy.value, False, self.game_state)
             else:
                 # Cached/terminal result; no request is sent.
@@ -245,21 +262,15 @@ class MCTS_Instance(Generic[GameStateT, MoveT]):
             kept_child._root_stat_visits    = kept_child.visits
             kept_child._root_stat_value_sum = kept_child.value_sum
 
+            # Remove the kept child from root's children so it won't be cleared
+            assert kept_child.parent_index is not None
+            self.root.children[kept_child.parent_index] = None
+
             kept_child.parent = None
             kept_child.parent_index = None
             kept_child.parent_move = None
 
-        pending = [self.root]
-
-        while pending:
-            node = pending.pop()
-
-            if node is kept_child:
-                continue  # Preserve this entire subtree.
-
-            pending.extend((child for child in node.children if child is not None))
-            node.children.clear()
-            node.parent = None
+        self.root.clear_subtree()
 
     def get_child_by_action(self, action: int) -> Node:
         # Find the child node corresponding to the chosen action
@@ -279,7 +290,7 @@ class Node(Generic[GameStateT, MoveT]):
     __slots__ = [
         "parent", "parent_index", "parent_move",
         "player", "children", "ints", "floats",
-        "value", "_root_stat_visits", "_root_stat_value_sum"
+        "value", "network_value", "_root_stat_visits", "_root_stat_value_sum"
     ]
     def __init__(self,
                  parent: Node[GameStateT, MoveT] | None,
@@ -304,6 +315,8 @@ class Node(Generic[GameStateT, MoveT]):
 
         # If terminal node, assign value on first simulation and return it
         self.value:                  float | None            = None
+        # Network evaluation from the point of view of the player to move.
+        self.network_value:          float | None            = None
         # Only the root owns standalone statistics.
         self._root_stat_visits:      int | None              = 0 if parent is None else None
         self._root_stat_value_sum:   float | None            = 0.0 if parent is None else None
@@ -382,7 +395,7 @@ class Node(Generic[GameStateT, MoveT]):
 
         return q + u
 
-    def expand(self, legal_actions: NDArray[np.uint16], probs: NDArray[np.float32]) -> None:
+    def expand(self, legal_actions: NDArray[np.uint16], probs: NDArray[np.float32], value: float) -> None:
         assert self.ints is None
         assert self.floats is None
         assert legal_actions.ndim == 1 and legal_actions.shape[0] > 0
@@ -401,6 +414,15 @@ class Node(Generic[GameStateT, MoveT]):
         self.floats[1].fill(0)
 
         self.children = [None] * K
+        self.network_value = value
+
+    def clear_subtree(self) -> None:
+        pending: list[Node[GameStateT, MoveT]] = [self]
+        while pending:
+            node = pending.pop()
+            pending.extend(child for child in node.children if child is not None)
+            node.children.clear()
+            node.parent = None
 
     def backpropogate(self, visits: int, total_value: float, terminal: bool, state: GameStateT) -> None:
         if terminal:
