@@ -2,13 +2,14 @@ import logging
 import time
 
 from queue import Queue, Empty
-from threading import Thread, Lock, Condition
+from threading import Thread, Lock, Condition, Event
 from typing import Generic, Self, TypeVar, Type, cast
 
 import numpy as np
 
 from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeRequest, AZ_NodeBatchResponse, BatchSparseLegalPolicy, SparseLegalPolicy
 from .Queues import mpQueueGen
+from .Metrics import WorkerMetrics, WorkerTotals
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
@@ -33,7 +34,7 @@ class GameWorker(Generic[GameStateT], object):
                  num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
-                 metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
+                 metrics_queue: mpQueueGen[WorkerMetrics],
                  worker_id: int, MCTS_factory: MCTS_Factory,
                  random_seed: int):
         self.game_type = game_type
@@ -46,7 +47,7 @@ class GameWorker(Generic[GameStateT], object):
         # Threading
         # Multiprocess stuff
         self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
-        self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
+        self.metrics_queue = metrics_queue
 
         self.out_queue:     mpQueueGen[AZ_NodeBatchRequest | None]         = out_queue
         self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
@@ -64,6 +65,13 @@ class GameWorker(Generic[GameStateT], object):
         self.sent_requests = 0
         self.received_batches = 0
         self.received_results = 0
+        self.fast_moves = 0
+        self.fast_skipped_rounds = 0
+        self.fast_budget_rounds = 0
+        self.full_moves = 0
+        self.full_cached_evals = 0
+        self.full_terminal_evals = 0
+        self.full_requested_evals = 0
         self.active_games = 0
 
     def run(self) -> None:
@@ -73,7 +81,9 @@ class GameWorker(Generic[GameStateT], object):
         self.staging_out_queue: Queue[AZ_NodeRequest] = Queue()
         Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
-        Thread(target=self.metrics_d, args=[], daemon=True).start()
+        games_finished = Event()
+        metrics_thread = Thread(target=self.metrics_d, args=(games_finished,), daemon=True)
+        metrics_thread.start()
 
         for i in range(self.num_games):
             new_game_instance = self.game_type()
@@ -89,6 +99,10 @@ class GameWorker(Generic[GameStateT], object):
 
         for thread in self.threads:
             thread.start()
+        for thread in self.threads:
+            thread.join()
+        games_finished.set()
+        metrics_thread.join()
 
     def inbound_mailman_d(self) -> None:
         """
@@ -178,18 +192,21 @@ class GameWorker(Generic[GameStateT], object):
             if requests:
                 first_request_time = time.perf_counter()
 
-    def metrics_d(self) -> None:
+    def metrics_d(self, games_finished: Event) -> None:
         while True:
-            time.sleep(self.metrics_interval_s)
+            finished = games_finished.wait(self.metrics_interval_s)
             with self.metrics_lock:
-                self.metrics_queue.put(
-                    (self.worker_id,
-                    self.total_moves,
-                    self.sent_batches,
-                    self.sent_requests,
-                    self.received_batches,
-                    self.received_results)
+                totals = WorkerTotals(
+                    moves=self.total_moves, sent_batches=self.sent_batches, sent_requests=self.sent_requests,
+                    received_batches=self.received_batches, received_results=self.received_results,
+                    fast_moves=self.fast_moves, fast_skipped_rounds=self.fast_skipped_rounds,
+                    fast_budget_rounds=self.fast_budget_rounds, full_moves=self.full_moves,
+                    full_cached_evals=self.full_cached_evals, full_terminal_evals=self.full_terminal_evals,
+                    full_requested_evals=self.full_requested_evals,
                 )
+            self.metrics_queue.put(WorkerMetrics(self.worker_id, totals))
+            if finished:
+                return
 
     def _evaluate_leaf(self, request: AZ_NodeRequest) -> SparseLegalPolicy:
         # Send batch request to worker pool.
@@ -222,15 +239,21 @@ class GameWorker(Generic[GameStateT], object):
 
         try:
             budget = MCTS_instance.num_rollouts(fast)
+            inherited_visits = MCTS_instance.root.visits
+            cached_evals = requested_evals = terminal_evals = 0
             while MCTS_instance.root.visits <= budget:
                 node, result = MCTS_instance.one_round_batch(thread_id, cache_root)
                 if isinstance(result, AZ_NodeRequest):
                     result = self._evaluate_leaf(result)
+                    requested_evals += 1
                 # else, result is a SparseLegalPolicy from a terminal node or cached evaluation.
                 elif result.legal_actions.size == 0:
                     # terminal nodes can be backpropagated immediately; cached ones need to be expanded first.
                     node.backpropogate(1, result.value, True, MCTS_instance.game_state)
+                    terminal_evals += 1
                     continue
+                else:
+                    cached_evals += 1
 
                 # Introduce Dirichlet noise to root node for exploration
                 # but only if in full search mode (want to maximise strength in fast). In other words:
@@ -264,6 +287,19 @@ class GameWorker(Generic[GameStateT], object):
                     value=root.value_sum / root.visits if root.visits > 0 else 0.0
                 ))
                 game.history['player'].append(game.current_player)
+
+            with self.metrics_lock:
+                if fast:
+                    # Without tree reuse, fast search would have taken one round to expand the root,
+                    # followed by `budget` rounds that visit a child.
+                    self.fast_moves += 1
+                    self.fast_budget_rounds += budget + 1
+                    self.fast_skipped_rounds += min(inherited_visits, budget + 1)
+                else:
+                    self.full_moves += 1
+                    self.full_cached_evals += cached_evals
+                    self.full_terminal_evals += terminal_evals
+                    self.full_requested_evals += requested_evals
 
             return legal_actions_arr, sparse_probs, MCTS_instance
         except Exception as e:

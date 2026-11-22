@@ -16,6 +16,7 @@ from tqdm import trange
 from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, SparseLegalPolicy
 from .batching.AZ_GameWorker import GameWorker
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
+from .batching.Metrics import WorkerMetrics
 from .batching.Queues import mpQueueGen
 from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase, CompactRepr
@@ -56,7 +57,7 @@ def self_play(
     ]
 
     # Cumulative moves
-    worker_metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]] = []
+    worker_metrics_queues: list[mpQueueGen[WorkerMetrics]] = []
     # Batch total, batches
     eval_metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]] = mpQueueGen(ctx)
 
@@ -67,7 +68,7 @@ def self_play(
         eval_worker_ps.append(p)
 
     for i, results_queue in enumerate(results_queues):
-        worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
+        worker_metrics_queue: mpQueueGen[WorkerMetrics] = mpQueueGen(ctx)
         worker_metrics_queues.append(worker_metrics_queue)
         game_worker = GameWorker(game_type,
                                  num_games=GAME_WORKER_GAMES,
