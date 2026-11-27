@@ -11,6 +11,9 @@ This project is an extension of Robert Förster's course [AlphaZero from Scratch
 > *WIP. This framework is functional but chess training is still ongoing. Further training and benchmarking are required to assess its performance.
 
 ## Example Usage
+
+Chess self-play and interactive play use the native `bulletchess` backend. The offline PGN tool uses the `pgn` extra (`pip install ".[pgn]"`) or the default Poetry development environment.
+
 ```sh
 poetry install
 

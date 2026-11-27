@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import random
 
+import bulletchess
 import chess
 import chess.pgn
 import numpy as np
@@ -51,7 +52,10 @@ def test_sampling_replays_history_and_is_deterministic(tmp_path):
         for move in list(game.mainline_moves())[:ply]:
             board.push(move)
         assert len(board.move_stack) == by_id[request.thread_idx]["history_plies"] == ply > 0
-        state = bench.ChessState(board)
+        native = bulletchess.Board.from_fen(game.board().fen())
+        for move in board.move_stack:
+            native.apply(bulletchess.Move.from_uci(move.uci()))
+        state = bench.ChessState(native)
         assert not state.get_value_and_terminated()[1]
         assert request.curr_player == (1 if board.turn else -1)
         np.testing.assert_array_equal(request.state, state.encode_for_model())
@@ -63,9 +67,9 @@ def test_sampling_replays_history_and_is_deterministic(tmp_path):
 def test_terminal_position_excluded_and_empty_game_has_no_sample():
     game = chess.pgn.read_game(io.StringIO("1. f3 e5 2. g4 Qh4# 0-1"))
     for seed in range(20):
-        board = bench.sample_board(game, random.Random(seed))
-        assert 1 <= board.ply() <= 3
-        assert not bench.ChessState(board).get_value_and_terminated()[1]
+        state = bench.sample_board(game, random.Random(seed))
+        assert 1 <= bench.board_ply(state.board) <= 3
+        assert not state.get_value_and_terminated()[1]
     assert bench.sample_board(chess.pgn.Game(), random.Random(0)) is None
 
 

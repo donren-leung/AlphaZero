@@ -11,11 +11,14 @@ from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeRequest, AZ_NodeBatchResponse
 from .Queues import mpQueueGen
 from .Metrics import WorkerMetrics, WorkerTotals
 from alphazero.games.GameBase import GameBase
-from alphazero.games.GameStateBase import GameStateBase
+from alphazero.games.GameStateBase import CompactRepr, GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
 
 GameStateT = TypeVar('GameStateT', bound='GameStateBase')
 GameT = GameBase[GameStateT]
+
+type CompletedGame = tuple[str, list[tuple[CompactRepr, SparseLegalPolicy, int]]]
+
 
 class GameWorker(Generic[GameStateT], object):
     """
@@ -31,7 +34,7 @@ class GameWorker(Generic[GameStateT], object):
     MAX_BATCH_SIZE = 256
 
     def __init__(self, game_type: type[GameBase[GameStateT]], *,
-                 num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
+                 num_games: int, output_games: mpQueueGen[CompletedGame],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
                  metrics_queue: mpQueueGen[WorkerMetrics],
@@ -50,7 +53,7 @@ class GameWorker(Generic[GameStateT], object):
         self.metrics_queue = metrics_queue
 
         self.out_queue:     mpQueueGen[AZ_NodeBatchRequest | None]         = out_queue
-        self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
+        self.output_games:  mpQueueGen[CompletedGame]   = output_games
 
         # Consider below zipped by thread index
         self.thread_inbox:  list[tuple[
@@ -360,7 +363,9 @@ class GameWorker(Generic[GameStateT], object):
         # Game finished
         # TODO: use pipe?
         logging.info(f"thread {thread_id} finished game")
-        self.output_games.put((f"{self.worker_id}_{thread_id}", game))
+        examples = list(zip(game.history["states"], game.history["MCTS_results"],
+                            game.history["outcome"], strict=True))
+        self.output_games.put((f"{self.worker_id}_{thread_id}", examples))
 
         with self.metrics_lock:
             self.active_games -= 1

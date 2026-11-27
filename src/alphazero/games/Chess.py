@@ -1,13 +1,18 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-import chess
+import re
+
+import bulletchess as chess
 import numpy as np
 from numpy.typing import NDArray
 
 from .GameStateBase import GameStateBase
 from .GameBase import GameBase
-from .ChessUtils import encode_move, decode_action, encode_chess, history_frame, RepetitionTracker, CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS
+from .ChessUtils import (
+    CHESS_ACTION_SIZE, CHESS_INPUT_CHANNELS, RepetitionTracker, board_ply,
+    compact_fen, decode_action, encode_chess, encode_move, history_frame, legal_mask,
+)
 
 type Board = chess.Board
 type ModelInput = NDArray[np.uint8]
@@ -24,10 +29,13 @@ class CompactChessState:
     moves: tuple[str, ...]
 
     def unpack(self) -> ModelInput:
-        board = chess.Board(self.fen)
+        board = chess.Board.from_fen(self.fen)
         history_frames: list[NDArray[np.uint8]] = [history_frame(board, self.repetition_flags[0])]
         for uci, repetitions in zip(self.moves, self.repetition_flags[1:], strict=True):
-            board.push_uci(uci)
+            move = chess.Move.from_uci(uci)
+            if move is None or move not in board.legal_moves():
+                raise ValueError(f"Illegal compact replay move {uci}")
+            board.apply(move)
             history_frames.append(history_frame(board, repetitions))
 
         # encode_chess expects reverse (newest first) order
@@ -43,25 +51,17 @@ class ChessState(GameStateBase[chess.Move]):
         self.repetition_tracker = repetition_tracker or RepetitionTracker(board)
 
     def get_legal_actions(self) -> NDArray[np.bool_]:
-        player = 1 if self.board.turn == chess.WHITE else -1
-        legal_actions = np.zeros(CHESS_ACTION_SIZE, dtype=np.bool_)
-        for move in self.board.legal_moves:
-            action = encode_move(self.board, move, player)
-            legal_actions[action] = True
-        return legal_actions
+        return legal_mask(self.board)
 
     def get_next_state(self, action: int, player: int, copy: bool=True) -> 'ChessState':
         move = decode_action(self.board, action, player)
         if copy:
-            new_state = ChessState(self.board.copy())
-            new_state.push_to_board(move)
-            return new_state
-        else:
-            irreversible = self.board.is_irreversible(move)
-            self.repetition_tracker.purge_cache_except(move, irreversible)
-            self.push_to_board(move)
-            self.repetition_tracker.cache_stack.clear()
-            return self
+            state = self.__copy__()
+            state.repetition_tracker.cache_stack.clear()
+            state.push_to_board(move)
+            return state
+        self.repetition_tracker.commit(move)
+        return self
 
     def encode_move(self, move: chess.Move) -> int:
         return encode_move(self.board, move, 1 if self.board.turn == chess.WHITE else -1)
@@ -73,68 +73,49 @@ class ChessState(GameStateBase[chess.Move]):
         self.repetition_tracker.push(move)
 
     def move_repr(self, move: chess.Move) -> str:
-        return self.board.san(move)
+        san = move.san(self.board)
+        # bulletchess 0.4 formats promotions as e8Q. The CLI uses canonical e8=Q.
+        if move.promotion is not None:
+            return re.sub(r"([18])([QRBN])", r"\1=\2", san)
+        return san
 
     def pop_board(self) -> chess.Move:
         return self.repetition_tracker.pop()
 
     def get_value_and_terminated(self):
-        if self.board.ply() >= 512:
-            # Hard cap on 512 half-moves.
+        board = self.board
+        if board_ply(board) >= 512:
             return 0, True
-
-        outcome = self.board.outcome(claim_draw=False)
-        if outcome is not None:
-            # Normal game end
-            if outcome.winner is None:
-                # Draw (by stalemate or insufficient material)
-                return 0, True
-            # Checkmate. The player who just moved is the winner, so the current player is the loser.
-            assert outcome.winner is not self.board.turn
+        if board in chess.CHECKMATE:
             return 1, True
-        else:
-            # Potentially draw by claimable 50-move rule or 3-fold repetition
-            # Or game is still ongoing.
-            if self.board.can_claim_fifty_moves():
-                return 0, True
-            if self.repetition_tracker.can_claim_threefold():
-                return 0, True
-            return 0, False
+        if board in chess.STALEMATE or board in chess.INSUFFICIENT_MATERIAL:
+            return 0, True
+        if board.halfmove_clock >= 100:
+            return 0, True
+        if board.halfmove_clock == 99:
+            # A player may announce a non-zeroing move that reaches 100 halfmoves.
+            for move in board.legal_moves():
+                board.apply(move)
+                try:
+                    if board.halfmove_clock == 100 and board not in chess.MATE:
+                        return 0, True
+                finally:
+                    board.undo()
+        return 0, self.repetition_tracker.can_claim_threefold()
 
     def encode_for_model(self, player: int=0) -> ModelInput:
         return encode_chess(self.board, self.repetition_tracker.curr_cache.history)
 
     def to_compact_repr(self, player: int=0) -> CompactChessState:
-        board = self.board.copy(stack=True)
-
-        moves: list[str] = []
-        repetition_flags: list[int] = []
-
-        for i in range(8):
-            # Total occurrences including this position, capped at 3.
-            if board.is_repetition(3):
-                count = 3
-            elif board.is_repetition(2):
-                count = 2
-            else:
-                count = 1
-
-            repetition_flags.append(count)
-
-            if i == 7 or not board.move_stack:
-                # Need N=8 repetition counts but only N-1 moves
-                # + starting position gets 8 positions.
-                break
-
-            move = board.pop()
+        board = self.board.copy()
+        frames = self.repetition_tracker.curr_cache.history
+        repetitions = tuple(1 + int(f[12, 0, 0]) + int(f[13, 0, 0]) for f in reversed(frames))
+        moves = []
+        for _ in range(len(frames) - 1):
+            move = board.undo()
+            assert move is not None
             moves.append(move.uci())
-
-        assert len(repetition_flags) == len(moves) + 1
-        return CompactChessState(
-            fen=board.fen(),
-            repetition_flags=tuple(reversed(repetition_flags)),
-            moves=tuple(reversed(moves)),
-        )
+        return CompactChessState(compact_fen(board), repetitions, tuple(reversed(moves)))
 
     def __str__(self) -> str:
         return str(self.board)
@@ -151,7 +132,7 @@ class ChessGame(GameBase[ChessState]):
     col_count: ClassVar[int] = 8
 
     def __init__(self, state: ChessState | None=None) -> None:
-        super().__init__(state)
+        super().__init__(state, starting_player=-1 if state is not None and state.board.turn == chess.BLACK else 1)
 
     @classmethod
     def get_initial_state(cls) -> ChessState:
@@ -170,18 +151,25 @@ class ChessGame(GameBase[ChessState]):
         return self.state.encode_for_model()
 
     def parse_move_str(self, cmd: str) -> int:
-        move = self.state.board.parse_san(cmd)
-        action = encode_move(self.state.board, move, self.current_player)
-
-        return action
+        board = self.state.board
+        if re.fullmatch(r"[a-h][1-8][a-h][1-8][qrbn]?", cmd):
+            move = chess.Move.from_uci(cmd)
+        else:
+            try:
+                move = chess.Move.from_san(cmd.replace("0", "O"), board)
+            except ValueError:
+                raise ValueError(f"Invalid SAN move: {cmd}") from None
+        if move is None or move not in board.legal_moves():
+            raise ValueError(f"Illegal move: {cmd}")
+        return encode_move(board, move, self.current_player)
 
     def get_legal_moves(self, legal_actions: NDArray[np.bool_]) -> list[str]:
         """
         Print the legal moves in a human-readable format (e.g. "e4" in chess).
         """
         return [
-            self.state.board.san(decode_action(self.state.board, i, self.current_player))
-            for i in range(self.action_size) if legal_actions[i]
+            self.state.move_repr(self.state.decode_action(int(i), self.current_player))
+            for i in np.flatnonzero(legal_actions)
         ]
 
     def __repr__(self) -> str:

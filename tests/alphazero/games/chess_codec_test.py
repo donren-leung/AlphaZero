@@ -1,56 +1,55 @@
-from typing import Sequence
 import io
 import random
 
+import bulletchess
 import chess
 import chess.pgn
-
 import numpy as np
-from numpy.typing import NDArray
 import pytest
 
-from alphazero.games.ChessUtils import (
-    AUXILIARY_PLANE_START,
-    CHESS_ACTION_SIZE,
-    CHESS_ENCODING_VERSION,
-    CHESS_PIECE_LAYERS,
-    CHESS_INPUT_CHANNELS,
-    REPETITION_PLANE_START,
-    TIME_STEP_LAYERS,
-    TIME_STEPS,
-    encode_move,
-    decode_action,
-    encode_chess,
-    initial_history
-)
-
-def _player(board: chess.Board) -> int:
-    return 1 if board.turn == chess.WHITE else -1
+from alphazero.games.Chess import ChessGame, ChessState
+from alphazero.games.ChessUtils import CHESS_ACTION_SIZE, CHESS_ENCODING_VERSION, decode_action, encode_move
+from chess_reference import native_board, old_encode_chess, reference_action, reference_decode
 
 
-def _encode_uci(board: chess.Board, uci: str) -> int:
-    return encode_move(board, chess.Move.from_uci(uci), _player(board))
+def assert_parity(reference: chess.Board, state: ChessState):
+    player = 1 if reference.turn else -1
+    expected = {reference_action(reference, m, player): m.uci() for m in reference.legal_moves}
+    actual = {state.encode_move(m): m.uci() for m in state.board.legal_moves()}
+    assert expected == actual
+    mask = state.get_legal_actions()
+    assert mask.shape == (4672,) and mask.dtype == np.bool_
+    assert np.flatnonzero(mask).tolist() == sorted(expected)
+    for action, uci in expected.items():
+        assert state.decode_action(action, player).uci() == uci
+    encoded = old_encode_chess(reference)
+    for tensor in (state.encode_for_model(), state.to_compact_repr().unpack()):
+        assert tensor.dtype == np.uint8
+        np.testing.assert_array_equal(tensor, encoded)
+    outcome = reference.outcome(claim_draw=True)
+    expected_result = (0, True) if reference.ply() >= 512 else (
+        int(outcome is not None and outcome.winner is not None), outcome is not None
+    )
+    assert state.get_value_and_terminated() == expected_result
 
-def _roundtrip(board):
-    player = 1 if board.turn == chess.WHITE else -1
-    actions = [encode_move(board, move, player) for move in board.legal_moves]
-    assert len(actions) == len(set(actions)), "legal actions collided"
-    assert all(0 <= a < CHESS_ACTION_SIZE for a in actions)
-    for move, action in zip(list(board.legal_moves), actions):
-        assert decode_action(board, action, player) == move
 
 def test_constants():
     assert CHESS_ACTION_SIZE == 4672
     assert CHESS_ENCODING_VERSION == 1
 
-def test_initial_and_random_play():
-    board = chess.Board()
-    for _ in range(180):
-        _roundtrip(board)
-        if board.is_game_over():
-            board.reset()
-        else:
-            board.push(next(iter(board.legal_moves)))
+@pytest.mark.parametrize("seed", [7, 42, 91])
+def test_initial_and_random_play(seed):
+    reference = chess.Board()
+    state = ChessState(bulletchess.Board())
+    rng = random.Random(seed)
+    for _ in range(120):
+        assert_parity(reference, state)
+        if reference.is_game_over(claim_draw=True):
+            break
+        move = rng.choice(list(reference.legal_moves))
+        state.get_next_state(reference_action(reference, move, 1 if reference.turn else -1),
+                             1 if reference.turn else -1, copy=False)
+        reference.push(move)
 
 @pytest.mark.parametrize("fen", [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", # starting position
@@ -66,12 +65,21 @@ def test_initial_and_random_play():
 ])
 
 def test_special_positions(fen):
-    _roundtrip(chess.Board(fen))
+    reference = chess.Board(fen)
+    state = ChessState(native_board(reference))
+    assert_parity(reference, state)
+    game = ChessGame(state)
+    for move in reference.legal_moves:
+        native = bulletchess.Move.from_uci(move.uci())
+        san = reference.san(move)
+        assert state.move_repr(native) == san
+        assert game.parse_move_str(san) == game.parse_move_str(move.uci()) == state.encode_move(native)
+
 
 def test_invalid():
-    board = chess.Board()
+    board = bulletchess.Board()
     with pytest.raises(AssertionError):
-        encode_move(board, chess.Move.from_uci("e2e4"), -1)
+        encode_move(board, bulletchess.Move.from_uci("e2e4"), -1)
     with pytest.raises(AssertionError):
         decode_action(board, 0, 0)
     for action in (-1, 4672, 999999,-58):
@@ -103,6 +111,8 @@ def test_colour_mirror_invariance(fen: str) -> None:
     black_board = white_board.mirror()
     assert black_board.turn == chess.BLACK
 
+    white = native_board(white_board)
+    black = native_board(black_board)
     for white_move in white_board.legal_moves:
         black_move = chess.Move(
             chess.square_mirror(white_move.from_square),
@@ -110,9 +120,9 @@ def test_colour_mirror_invariance(fen: str) -> None:
             promotion=white_move.promotion,
         )
         assert black_move in black_board.legal_moves
-        action = encode_move(white_board, white_move, 1)
-        assert encode_move(black_board, black_move, -1) == action
-        assert decode_action(black_board, action, -1) == black_move
+        action = encode_move(white, bulletchess.Move.from_uci(white_move.uci()), 1)
+        assert encode_move(black, bulletchess.Move.from_uci(black_move.uci()), -1) == action
+        assert decode_action(black, action, -1).uci() == black_move.uci()
 
 
 @pytest.mark.parametrize(
@@ -126,97 +136,29 @@ def test_colour_mirror_invariance(fen: str) -> None:
     ],
 )
 def test_full_action_space(fen: str) -> None:
-    """
-    Tests:
-    1. Every legal move encodes to a unique action.
-    2. Every legal action decodes to its original move.
-    3. Every action in the full 4,672-action space either decodes to an on-board move
-       or raises ValueError because it points off the board.
-    """
-    board = chess.Board(fen)
-    player = _player(board)
-
-    expected = {
-        encode_move(board, move, player): move
-        for move in board.legal_moves
-    }
-    assert len(expected) == board.legal_moves.count()
-
+    """Compare every slot, including off-board geometry and impossible promotions."""
+    reference = chess.Board(fen)
+    board = native_board(reference)
+    player = 1 if reference.turn else -1
     for action in range(CHESS_ACTION_SIZE):
         try:
-            move = decode_action(board, action, player)
-        except ValueError as exc:
-            assert "off the board" in str(exc)
-            assert action not in expected
-        else:
-            # Every successfully decoded action must remain on the board.
-            assert 0 <= move.from_square < 64
-            assert 0 <= move.to_square < 64
+            expected = reference_decode(reference, action, player)
+        except ValueError:
+            with pytest.raises(ValueError, match="off the board"):
+                decode_action(board, action, player)
+            continue
 
-            # Every legal action must round-trip correctly.
-            if action in expected:
-                assert move == expected[action]
+        if expected.promotion:
+            # python-chess can describe an impossible promotion, even from the second rank.
+            rank = chess.square_rank(expected.from_square)
+            df = chess.square_file(expected.to_square) - chess.square_file(expected.from_square)
+            if rank != (6 if reference.turn else 1) or abs(df) > 1:
+                assert expected not in reference.legal_moves
+                with pytest.raises(ValueError, match="impossible promotion"):
+                    decode_action(board, action, player)
+                continue
+        assert decode_action(board, action, player).uci() == expected.uci()
 
-def old_encode_chess(board: chess.Board, repetitions: Sequence[int] | None=None) -> NDArray[np.uint8]:
-    """
-    Accepts optional repetition history.
-    repetitions[t] is the number of repetitions of pos t halfmoves ago.
-    """
-    # AlphaZero encoding
-    # P1 pieces (6)
-    # P2 pieces (6)
-    # Repetition 2, 3 (2); whole plane binary mask
-    # Repeat for T=8 halfmove history (8 * 14 = 112)
-
-    # P1 castling rights (2); whole plane binary mask
-    # P2 castling rights (2); whole plane binary mask
-    # Total move count (1); whole plane encoded
-    # No progress clock (1); whole plane encoded
-
-    is_white = board.turn
-
-    # Time step planes
-    features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
-    history = board.copy()
-    for ply in range(TIME_STEPS):
-        for square, piece in history.piece_map().items():
-            oriented = square if is_white else chess.square_mirror(square)
-            side = 0 if piece.color == is_white else CHESS_PIECE_LAYERS
-            plane = ply * TIME_STEP_LAYERS + side + piece.piece_type - 1
-            features[plane, chess.square_rank(oriented),
-                     chess.square_file(oriented)] = 1
-
-        if repetitions is not None:
-            assert ply < len(repetitions), "Repetition history is shorter than the number of halfmoves"
-            r2 = repetitions[ply] >= 2
-            r3 = repetitions[ply] >= 3
-        else:
-            r2 = history.is_repetition(2)
-            r3 = history.is_repetition(3)
-
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START, :, :] = r2
-        features[ply * TIME_STEP_LAYERS + REPETITION_PLANE_START + 1, :, :] = r3
-
-        if not history.move_stack:
-            break
-        history.pop()
-
-    # Auxiliary planes
-    for plane, color, kingside in (
-        (AUXILIARY_PLANE_START, is_white, True), (AUXILIARY_PLANE_START + 1, is_white, False),
-        (AUXILIARY_PLANE_START + 2, not is_white, True), (AUXILIARY_PLANE_START + 3, not is_white, False),
-    ):
-        has_right = (
-            board.has_kingside_castling_rights(color)
-            if kingside else board.has_queenside_castling_rights(color)
-        )
-        features[plane, :, :] = has_right
-
-    features[AUXILIARY_PLANE_START + 4, 0, 0] = board.ply() >> 8
-    features[AUXILIARY_PLANE_START + 4, 0, 1] = board.ply() & 0xFF
-    features[AUXILIARY_PLANE_START + 5, :, :] = board.halfmove_clock
-
-    return features
 
 @pytest.mark.parametrize(
     ("pgn_str"),
@@ -250,14 +192,73 @@ def test_new_encode_chess(pgn_str: str) -> None:
 
     board = game.board()
 
-    enc1 = encode_chess(board, initial_history(board))
-    enc2 = old_encode_chess(board)
-    assert np.array_equal(enc1, enc2)
-
+    state = ChessState(native_board(board))
+    assert_parity(board, state)
     for move in game.mainline_moves():
+        state.push_to_board(bulletchess.Move.from_uci(move.uci()))
         board.push(move)
-        enc1 = encode_chess(board, initial_history(board))
-        enc2 = old_encode_chess(board)
-        assert np.array_equal(enc1, enc2)
+        assert_parity(board, state)
 
     assert board.outcome(claim_draw=True) is not None
+
+
+@pytest.mark.parametrize("fen", [
+    "k3r3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",   # pinned EP capturer
+    "7k/8/8/8/8/8/8/R3K3 w - - 100 51",
+    "7k/8/8/8/8/8/8/R3K3 w - - 150 76",
+    "7k/6Q1/5K2/8/8/8/8/8 b - - 150 76",    # mate precedes clock draws
+    "7k/8/8/8/8/8/8/R3K3 b - - 2 256",       # ply 511
+    "7k/8/8/8/8/8/8/R3K3 w - - 2 257",       # ply 512
+    "8/8/8/8/8/5k2/6q1/7K w - - 0 257",      # cap precedes mate
+    "2b4k/8/4b3/8/2B5/8/8/K7 w - - 0 1",    # same-color bishops
+    "2b4k/8/8/8/3B4/8/8/K7 w - - 0 1",      # opposite-color bishops
+])
+def test_rule_boundaries(fen):
+    board = chess.Board(fen)
+    assert_parity(board, ChessState(native_board(board)))
+
+
+def test_search_undo_siblings_and_commit():
+    reference = chess.Board()
+    state = ChessState(native_board(reference))
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8") * 4:
+        assert_parity(reference, state)
+        move = reference.push_san(san)
+        state.push_to_board(bulletchess.Move.from_uci(move.uci()))
+    assert reference.is_fivefold_repetition()
+    assert_parity(reference, state)
+    for _ in range(9):
+        assert state.pop_board().uci() == reference.pop().uci()
+        assert_parity(reference, state)
+    # Seven plies in, Black can announce Ng8 and claim the third occurrence.
+    assert reference.can_claim_threefold_repetition() and not reference.is_repetition(3)
+    for san in ("e5", "Ng8", "e5"):
+        move = reference.push_san(san)
+        state.push_to_board(bulletchess.Move.from_uci(move.uci()))
+        assert_parity(reference, state)
+        state.pop_board()
+        reference.pop()
+    copied = state.__copy__()
+    move = reference.parse_san("e5")
+    state.get_next_state(reference_action(reference, move, -1), -1, copy=False)
+    assert_parity(reference, copied)
+    reference.push(move)
+    assert_parity(reference, state)
+    with pytest.raises(IndexError):
+        state.pop_board()
+
+
+@pytest.mark.parametrize(("fen", "field", "replacement", "same"), [
+    ("k3r3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 3, "-", True),
+    ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 3, "-", False),
+    ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", 2, "Kkq", False),
+    (chess.STARTING_FEN, 4, "12", True),
+    (chess.STARTING_FEN, 1, "b", False),
+])
+def test_repetition_identity_and_compact_fen(fen, field, replacement, same):
+    from alphazero.games.ChessUtils import position_key
+    fields = fen.split()
+    fields[field] = replacement
+    board = bulletchess.Board.from_fen(fen)
+    assert (position_key(board) == position_key(bulletchess.Board.from_fen(" ".join(fields)))) == same
+    assert ChessState(board).to_compact_repr().fen == chess.Board(fen).fen()

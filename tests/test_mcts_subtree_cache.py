@@ -136,8 +136,72 @@ def test_worker_publishes_final_metrics_after_games_finish(worker_evaluator, mon
     snapshot, = worker.metrics_queue.put.call_args.args
     totals = snapshot.totals
     assert worker.output_games.put.call_count == 2
-    full_moves = sum(len(call.args[0][1].history["states"]) for call in worker.output_games.put.call_args_list)
+    full_moves = sum(len(call.args[0][1]) for call in worker.output_games.put.call_args_list)
     assert totals.full_moves == full_moves
     full_rounds = totals.full_cached_evals + totals.full_terminal_evals + totals.full_requested_evals
     assert full_rounds == full_moves * (worker.MCTS_factory.rollouts + 1)
     assert totals.fast_moves + full_moves == totals.moves == worker.total_moves
+
+
+def test_chess_search_matches_b1fd8df(worker_evaluator):
+    from alphazero.games.Chess import ChessGame
+
+    worker, _ = worker_evaluator
+    worker.MCTS_factory.rollouts = 32
+    game = ChessGame()
+    actions, policy, search = worker.search_move(0, game, None, np.random.default_rng(37), fast=False)
+    # Generated on b1fd8df with the same evaluator, player, seed and rollout budget.
+    expected_visits = [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 20, 1, 1]
+    assert search.root.ints[1].tolist() == expected_visits
+    assert search.root.value_sum == pytest.approx(1.1111111111111107)
+    assert actions[policy.argmax()] == 3585
+    assert search.game_state.board.history == []
+    np.testing.assert_array_equal(search.game_state.encode_for_model(), game.encode_for_model())
+
+
+def _finish_chess_game(output):
+    from alphazero.games.Chess import ChessGame
+
+    game = ChessGame()
+    for san in ("f3", "e5", "g4"):
+        game.make_move(game.parse_move_str(san))
+    mate = game.parse_move_str("Qh4#")
+    factory = MCTS_Factory(4)
+    factory.dirichlet_epsilon = 0
+    worker = GameWorker(ChessGame, num_games=1, worker_id=0, random_seed=1, MCTS_factory=factory,
+                        in_queue=Mock(), out_queue=Mock(), output_games=output, metrics_queue=Mock())
+    worker.metrics_lock = Lock()
+
+    def force_mate(request):
+        actions = np.flatnonzero(request.legal_mask).astype(np.uint16)
+        return SparseLegalPolicy(actions, (actions == mate).astype(np.float32), 0.0)
+
+    worker._evaluate_leaf = force_mate
+    worker.run_game(0, game)
+
+
+def test_completed_chess_examples_cross_spawn_queue():
+    import multiprocessing
+    from alphazero.batching.Queues import mpQueueGen
+    from alphazero.games.Chess import ChessGame
+
+    ctx = multiprocessing.get_context("spawn")
+    queue = mpQueueGen(ctx)
+    child = ctx.Process(target=_finish_chess_game, args=(queue,))
+    child.start()
+    try:
+        game_id, examples = queue.get(timeout=45)
+    finally:
+        child.join(timeout=10)
+        if child.is_alive():
+            child.terminate()
+            child.join()
+    assert child.exitcode == 0
+    assert game_id == "0_0"
+    (compact, policy, outcome), = examples
+    game = ChessGame()
+    for san in ("f3", "e5", "g4"):
+        game.make_move(game.parse_move_str(san))
+    np.testing.assert_array_equal(compact.unpack(), game.encode_for_model())
+    assert policy.unpack(game.action_size).argmax() == game.parse_move_str("Qh4#")
+    assert outcome == 1

@@ -30,6 +30,26 @@ astroid = ["astroid (>=2,<5)"]
 test = ["astroid (>=2,<5)", "pytest (<9.0)", "pytest-cov", "pytest-xdist"]
 
 [[package]]
+name = "bulletchess"
+version = "0.4.0"
+description = "A high performance C Extension for chess"
+optional = false
+python-versions = ">=3.13"
+groups = ["main"]
+files = [
+    {file = "bulletchess-0.4.0-cp313-cp313-ios_13_0_arm64_iphoneos.whl", hash = "sha256:f9c18d4d85a24a4fa277045dcd3fd0df045610efe3c2c12c56baa4409db88593"},
+    {file = "bulletchess-0.4.0-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:ca19fcbf57ef4a36be46ad7e37b3d90445440f02ac70574c9f431dca54aa5743"},
+    {file = "bulletchess-0.4.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:e9f2d0d72a9d69076526be118fa47412b983775781453db62dad869d96f902c9"},
+    {file = "bulletchess-0.4.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:3948b7ee9ae50b1c71b8642014e3165543a6ef4142e4b7326fb0a9ba2c9a9b3d"},
+    {file = "bulletchess-0.4.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e29631e1eaffbf22cb10f27059d4ba25b1f2f83eb422fb1d9e64500b1109e6a9"},
+    {file = "bulletchess-0.4.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a5976e37d89e8c526d15380abdfbe21c703b374380df76593c193f396e1bec89"},
+    {file = "bulletchess-0.4.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:db406ad6e3fe9b55afd125facede07e876a449e7ba131e89689b58ec12581f93"},
+    {file = "bulletchess-0.4.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:8f354d4f3f26e0b4ea7e762adb875748875c3520c74485949668e89521783c1f"},
+    {file = "bulletchess-0.4.0-cp313-cp313-win_amd64.whl", hash = "sha256:ec770eeda94ce4f8fa6efae0bfce812288c443f95c0194c3da6e5412fc29a05c"},
+    {file = "bulletchess-0.4.0.tar.gz", hash = "sha256:a3ba3c29208039cc12e388da377e493406afa74cde26f9756b1d1c6563a130fb"},
+]
+
+[[package]]
 name = "cffi"
 version = "2.1.1"
 description = "Foreign Function Interface for Python calling C code."
@@ -149,10 +169,11 @@ version = "1.11.2"
 description = "A chess library with move generation and validation, Polyglot opening book probing, PGN reading and writing, Gaviota tablebase probing, Syzygy tablebase probing, and XBoard/UCI engine communication."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["main", "dev"]
 files = [
     {file = "chess-1.11.2.tar.gz", hash = "sha256:a8b43e5678fdb3000695bdaa573117ad683761e5ca38e591c4826eba6d25bb39"},
 ]
+markers = {main = "extra == \"pgn\""}
 
 [[package]]
 name = "colorama"
@@ -2277,7 +2298,10 @@ files = [
     {file = "wcwidth-0.9.1.tar.gz", hash = "sha256:5823209b0d43af322ce698c689380d7c15ca31fa8e6e3be8459f27031bef0af5"},
 ]
 
+[extras]
+pgn = ["chess"]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "63bbfaa5d3a214ab5c3e392b273c99b3f6811d8d0bf329ab9e9ea2d498a10269"
+content-hash = "d60f8e6d38e039638859a971730d3f66f0147ca4cec1d883cb71cd705f0fbd58"
