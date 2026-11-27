@@ -3,6 +3,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 
@@ -85,8 +86,9 @@ def training_model_args(args: argparse.Namespace) -> dict:
         "random_seed": args.seed
     }
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
+        argument_default=argparse.SUPPRESS,
         description="Run batched parallel MCTS self-play."
     )
 
@@ -101,7 +103,6 @@ def parse_args() -> argparse.Namespace:
         "--rollouts",
         "-r",
         type=int,
-        default=400,
         help="Number of MCTS nodes per move (default: 400)",
     )
 
@@ -109,7 +110,6 @@ def parse_args() -> argparse.Namespace:
         "--processes",
         "-p",
         type=int,
-        default=1,
         help="Number of node-evaluation worker processes (default: 1)",
     )
 
@@ -117,7 +117,6 @@ def parse_args() -> argparse.Namespace:
         "--game-workers",
         "-gw",
         type=int,
-        default=8,
         help="Number of GameWorker processes (default: 8)",
     )
 
@@ -125,7 +124,6 @@ def parse_args() -> argparse.Namespace:
         "--games-per-worker",
         "-gpw",
         type=int,
-        default=64,
         help="Number of concurrent games/threads per GameWorker (default: 64)",
     )
 
@@ -133,7 +131,6 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         "-b",
         type=int,
-        default=256,
         help="GPU batch size for supervised training (default: 256)",
     )
 
@@ -141,7 +138,6 @@ def parse_args() -> argparse.Namespace:
         "--inference-max-batch-size",
         "-ib",
         type=int,
-        default=256,
         help="GPU batch size for node evaluation (default: 256)",
     )
 
@@ -149,7 +145,6 @@ def parse_args() -> argparse.Namespace:
         "--learning-rate",
         "-lr",
         type=float,
-        default=0.001,
         help="Learning rate for the optimizer (default: 0.001)",
     )
 
@@ -157,7 +152,6 @@ def parse_args() -> argparse.Namespace:
         "--weight-decay",
         "-wd",
         type=float,
-        default=1e-4,
         help="Weight decay for the optimizer (default: 1e-4)",
     )
 
@@ -168,10 +162,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--iter",
+        "--iter", "--i",
         "-i",
         type=int,
-        default=5,
         help="Number of self-play iterations to run",
     )
 
@@ -179,7 +172,6 @@ def parse_args() -> argparse.Namespace:
         "--epochs",
         "-e",
         type=int,
-        default=4,
         help="Number of epochs to train the model per iteration",
     )
 
@@ -188,7 +180,6 @@ def parse_args() -> argparse.Namespace:
         "-a",
         type=str,
         choices=MODEL_ARCHITECTURES.keys(),
-        default=None,
         help="Model architecture (default: resnet for new runs, saved architecture on resume)",
     )
 
@@ -196,7 +187,6 @@ def parse_args() -> argparse.Namespace:
         "--blocks",
         "-bl",
         type=int,
-        default=None,
         help=f"Number of residual blocks in the model (default: {DEFAULT_BLOCKS})",
     )
 
@@ -204,7 +194,6 @@ def parse_args() -> argparse.Namespace:
         "--channels",
         "-ch",
         type=int,
-        default=None,
         help=f"Number of channels in the model (default: {DEFAULT_CHANNELS})",
     )
 
@@ -212,25 +201,45 @@ def parse_args() -> argparse.Namespace:
         "--head-channels",
         "-hch",
         type=int,
-        default=None,
         help=f"Number of channels in the model heads (default: {DEFAULT_HEAD_CHANNELS})",
     )
 
     parser.add_argument(
         "--resume",
         type=Path,
-        default=None,
         help="Path to a saved model to resume training from (default: None)",
     )
 
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
         help="Random seed for worker processes (default: 42)",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    # With only the game, --resume, and -i, continue in the checkpoint folder.
+    # -i counts additional iterations and can differ from the original run.
+    # Supplying any other option selects a separate output directory.
+    resume_in_place = set(vars(args)) == {"game_type", "resume", "iter"}
+    defaults = dict(rollouts=400, processes=1, game_workers=8, games_per_worker=64,
+                    batch_size=256, inference_max_batch_size=256, learning_rate=0.001,
+                    weight_decay=1e-4, gpu=False, iter=5, epochs=4, architecture=None,
+                    blocks=None, channels=None, head_channels=None, resume=None, seed=42)
+    if resume_in_place:
+        directory = args.resume.expanduser().resolve().parent
+        # Older checkpoints encode the search and training settings in the run name.
+        match = re.match(r"^[^_]+_r(\d+)_p(\d+)_gw(\d+)_gpw(\d+)_b(\d+)_e(\d+)(?:_|$)", directory.name)
+        if match:
+            keys = ("rollouts", "processes", "game_workers", "games_per_worker", "batch_size", "epochs")
+            defaults.update(zip(keys, map(int, match.groups()), strict=True))
+        metadata = directory / "args.json"
+        if metadata.is_file():
+            saved = json.loads(metadata.read_text())
+            for key in ("inference_max_batch_size", "learning_rate", "weight_decay"):
+                if key in saved:
+                    defaults[key] = saved[key]
+            defaults["seed"] = saved.get("random_seed", defaults["seed"])
+    return argparse.Namespace(**(defaults | vars(args)), resume_in_place=resume_in_place)
 
 class ThreadSafeCounter:
     def __init__(self, initial_value=0):

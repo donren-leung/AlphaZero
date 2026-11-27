@@ -134,12 +134,18 @@ class AlphaZero:
         architecture = model_args["architecture"]
         if architecture != DEFAULT_ARCHITECTURE:
             settings_name += f"_{architecture}"
+
+        # For a separate resumed run, include the source folder and checkpoint in the name.
+        # Seed, inference batch size, learning rate, and weight decay are omitted,
+        # so runs from the same checkpoint that differ only in those values share
+        # an output directory.
+        # An in-place resume (args.resume_in_place) rewrites self.artifiact_dir
+        # to be the checkpoint folder below.
         if args.resume is not None:
             settings_name += f"_resume_{args.resume.parent.name}_{args.resume.stem}"
 
         project_root = Path(__file__).resolve().parent.parent.parent
         self.artifact_dir = project_root / "artifacts" / settings_name
-        self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
         self.start_iteration = 0
         if args.resume is not None:
@@ -176,13 +182,24 @@ class AlphaZero:
             checkpoint_iteration = int(model_path.stem.removeprefix("model_"))
             self.start_iteration = checkpoint_iteration + 1
 
+            if args.resume_in_place:
+                self.artifact_dir = model_path.parent
+                for iteration in range(self.start_iteration, self.start_iteration + args.iter):
+                    for prefix in ("model", "optimizer"):
+                        destination = self.artifact_dir / f"{prefix}_{iteration:03d}.pt"
+                        if destination.exists():
+                            raise FileExistsError(f"Resume would overwrite {destination}")
             print(f"Resumed from {model_path}")
+
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        args_path = self.artifact_dir / "args.json"
+        if args.resume_in_place and args_path.is_file():
+            return
 
         args_payload = {k: v for k, v in model_args.items() if k not in ("batch_size", "state_dict")}
         args_payload["architecture"] = architecture
         args_payload["resume_from"] = (str(args.resume.expanduser().resolve()) if args.resume is not None else None)
 
-        args_path = self.artifact_dir / "args.json"
         with open(args_path, "w") as f:
             json.dump(args_payload, f, indent=4)
 
