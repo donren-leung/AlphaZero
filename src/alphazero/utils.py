@@ -285,14 +285,19 @@ def _reuse_report(totals: WorkerTotals, *, final: bool = False) -> str:
     Reused statistics are kept cumulatively across time.
     """
     skipped_percent = f"{totals.fast_skipped_rounds / totals.fast_budget_rounds:.0%}" if totals.fast_budget_rounds else "N/A"
-    fast = f"{totals.fast_skipped_rounds} skipped/{totals.fast_budget_rounds} total" \
-           f"({skipped_percent}, {totals.fast_moves} moves)"
+    terminal_percent = f"{totals.fast_terminal_rounds / totals.fast_budget_rounds:.0%}" if totals.fast_budget_rounds else "N/A"
+    fast = (
+        f"{totals.fast_skipped_rounds} skipped + {totals.fast_terminal_rounds} terminal/{totals.fast_budget_rounds} total "
+        f"({skipped_percent} + {terminal_percent}, {totals.fast_moves} moves)"
+    )
 
     full_all = totals.full_cached_evals + totals.full_terminal_evals + totals.full_requested_evals
     cached_percent = f"{totals.full_cached_evals / full_all:.0%}" if full_all else "N/A"
     terminal_percent = f"{totals.full_terminal_evals / full_all:.0%}" if full_all else "N/A"
-    full = f"{totals.full_cached_evals} cached + {totals.full_terminal_evals} terminal/{full_all} total" \
-           f"({cached_percent} + {terminal_percent}, {totals.full_moves} moves)"
+    full = (
+        f"{totals.full_cached_evals} cached + {totals.full_terminal_evals} terminal/{full_all} total "
+        f"({cached_percent} + {terminal_percent}, {totals.full_moves} moves)"
+    )
 
     label = "[Search reuse total]" if final else "[Search reuse]"
     return f"{label} fast: {fast} | full: {full}"
