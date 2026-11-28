@@ -21,6 +21,19 @@ from .models.model import (
     DEFAULT_BLOCKS, DEFAULT_CHANNELS, DEFAULT_HEAD_CHANNELS
 )
 
+DEFAULT_ROLLOUTS = 400
+DEFAULT_PROCESSES = 1
+DEFAULT_GAME_WORKERS = 8
+DEFAULT_GAMES_PER_WORKER = 256
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_INFERENCE_MAX_BATCH_SIZE = 256
+DEFAULT_LEARNING_RATE = 0.001
+DEFAULT_WEIGHT_DECAY = 1e-4
+DEFAULT_GPU = True
+DEFAULT_ITERATIONS = 6
+DEFAULT_EPOCHS = 2
+DEFAULT_SEED = 42
+
 GameType = type[GameBase]
 game_types: dict[str, GameType] = {
     "ttt": TicTacToeGame,
@@ -162,7 +175,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--iter", "--i",
+        "--iter",
         "-i",
         type=int,
         help="Number of self-play iterations to run",
@@ -221,10 +234,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # -i counts additional iterations and can differ from the original run.
     # Supplying any other option selects a separate output directory.
     resume_in_place = set(vars(args)) == {"game_type", "resume", "iter"}
-    defaults = dict(rollouts=400, processes=1, game_workers=8, games_per_worker=64,
-                    batch_size=256, inference_max_batch_size=256, learning_rate=0.001,
-                    weight_decay=1e-4, gpu=False, iter=5, epochs=4, architecture=None,
-                    blocks=None, channels=None, head_channels=None, resume=None, seed=42)
+    defaults = dict(rollouts=DEFAULT_ROLLOUTS, processes=DEFAULT_PROCESSES,
+                    game_workers=DEFAULT_GAME_WORKERS, games_per_worker=DEFAULT_GAMES_PER_WORKER,
+                    batch_size=DEFAULT_BATCH_SIZE, inference_max_batch_size=DEFAULT_INFERENCE_MAX_BATCH_SIZE,
+                    learning_rate=DEFAULT_LEARNING_RATE, weight_decay=DEFAULT_WEIGHT_DECAY,
+                    gpu=DEFAULT_GPU, iter=DEFAULT_ITERATIONS, epochs=DEFAULT_EPOCHS,
+                    # None means user omitted the setting.
+                    # training_model_args() can then use the checkpoint’s saved setting or,
+                    # for a fresh run, the corresponding DEFAULT_*
+                    architecture=None, blocks=None,
+                    channels=None, head_channels=None,
+                    resume=None, seed=DEFAULT_SEED)
     if resume_in_place:
         directory = args.resume.expanduser().resolve().parent
         # Older checkpoints encode the search and training settings in the run name.
@@ -265,14 +285,19 @@ def _reuse_report(totals: WorkerTotals, *, final: bool = False) -> str:
     Reused statistics are kept cumulatively across time.
     """
     skipped_percent = f"{totals.fast_skipped_rounds / totals.fast_budget_rounds:.0%}" if totals.fast_budget_rounds else "N/A"
-    fast = f"{totals.fast_skipped_rounds} skipped/{totals.fast_budget_rounds} total" \
-           f"({skipped_percent}, {totals.fast_moves} moves)"
+    terminal_percent = f"{totals.fast_terminal_rounds / totals.fast_budget_rounds:.0%}" if totals.fast_budget_rounds else "N/A"
+    fast = (
+        f"{totals.fast_skipped_rounds} skipped + {totals.fast_terminal_rounds} terminal/{totals.fast_budget_rounds} total "
+        f"({skipped_percent} + {terminal_percent}, {totals.fast_moves} moves)"
+    )
 
     full_all = totals.full_cached_evals + totals.full_terminal_evals + totals.full_requested_evals
     cached_percent = f"{totals.full_cached_evals / full_all:.0%}" if full_all else "N/A"
     terminal_percent = f"{totals.full_terminal_evals / full_all:.0%}" if full_all else "N/A"
-    full = f"{totals.full_cached_evals} cached + {totals.full_terminal_evals} terminal/{full_all} total" \
-           f"({cached_percent} + {terminal_percent}, {totals.full_moves} moves)"
+    full = (
+        f"{totals.full_cached_evals} cached + {totals.full_terminal_evals} terminal/{full_all} total "
+        f"({cached_percent} + {terminal_percent}, {totals.full_moves} moves)"
+    )
 
     label = "[Search reuse total]" if final else "[Search reuse]"
     return f"{label} fast: {fast} | full: {full}"

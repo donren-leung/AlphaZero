@@ -39,13 +39,15 @@ class GameWorker(Generic[GameStateT], object):
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
                  metrics_queue: mpQueueGen[WorkerMetrics],
                  worker_id: int, MCTS_factory: MCTS_Factory,
-                 random_seed: int):
+                 random_seed: int,
+                 iteration: int):
         self.game_type = game_type
         self.num_games = num_games
 
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
         self.random_seed = random_seed
+        self.iteration = iteration
 
         # Threading
         # Multiprocess stuff
@@ -70,6 +72,7 @@ class GameWorker(Generic[GameStateT], object):
         self.received_results = 0
         self.fast_moves = 0
         self.fast_skipped_rounds = 0
+        self.fast_terminal_rounds = 0
         self.fast_budget_rounds = 0
         self.full_moves = 0
         self.full_cached_evals = 0
@@ -203,7 +206,8 @@ class GameWorker(Generic[GameStateT], object):
                     moves=self.total_moves, sent_batches=self.sent_batches, sent_requests=self.sent_requests,
                     received_batches=self.received_batches, received_results=self.received_results,
                     fast_moves=self.fast_moves, fast_skipped_rounds=self.fast_skipped_rounds,
-                    fast_budget_rounds=self.fast_budget_rounds, full_moves=self.full_moves,
+                    fast_terminal_rounds=self.fast_terminal_rounds, fast_budget_rounds=self.fast_budget_rounds,
+                    full_moves=self.full_moves,
                     full_cached_evals=self.full_cached_evals, full_terminal_evals=self.full_terminal_evals,
                     full_requested_evals=self.full_requested_evals,
                 )
@@ -296,6 +300,7 @@ class GameWorker(Generic[GameStateT], object):
                 if fast:
                     self.fast_moves += 1
                     self.fast_budget_rounds += round_budget
+                    self.fast_terminal_rounds += terminal_evals
                     self.fast_skipped_rounds += round_budget - rounds_run
                 else:
                     self.full_moves += 1
@@ -314,7 +319,7 @@ class GameWorker(Generic[GameStateT], object):
 
     def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
-        rng = np.random.default_rng([self.random_seed, self.worker_id, thread_id])
+        rng = np.random.default_rng([self.iteration, self.random_seed, self.worker_id, thread_id])
 
         fast = False
         previous_root = None

@@ -9,9 +9,9 @@ from alphazero.batching.Metrics import WorkerMetrics, WorkerTotals
 
 
 def test_interval_reports_weight_workers_and_count_each_snapshot_once(monkeypatch, capsys):
-    small = WorkerMetrics(0, WorkerTotals(fast_moves=1, fast_skipped_rounds=2, fast_budget_rounds=2,
+    small = WorkerMetrics(0, WorkerTotals(fast_moves=1, fast_skipped_rounds=2, fast_terminal_rounds=0, fast_budget_rounds=2,
                                           full_moves=1, full_cached_evals=1, full_terminal_evals=1, full_requested_evals=1))
-    large = WorkerMetrics(1, WorkerTotals(fast_moves=3, fast_skipped_rounds=1, fast_budget_rounds=8,
+    large = WorkerMetrics(1, WorkerTotals(fast_moves=3, fast_skipped_rounds=1, fast_terminal_rounds=2, fast_budget_rounds=8,
                                           full_moves=4, full_cached_evals=2, full_terminal_evals=3, full_requested_evals=6))
     queues = [Queue(), Queue()]
     queues[0].put(small)
@@ -35,9 +35,9 @@ def test_interval_reports_weight_workers_and_count_each_snapshot_once(monkeypatc
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[Search reuse")]
     assert lines == [
-        "[Search reuse] fast: 3 skipped/10 total(30%, 4 moves) | full: 3 cached + 4 terminal/14 total(21% + 29%, 5 moves)",
-        "[Search reuse] fast: 0 skipped/0 total(N/A, 0 moves) | full: 0 cached + 0 terminal/0 total(N/A + N/A, 0 moves)",
-        "[Search reuse total] fast: 3 skipped/10 total(30%, 4 moves) | full: 5 cached + 5 terminal/17 total(29% + 29%, 6 moves)",
+        "[Search reuse] fast: 3 skipped + 2 terminal/10 total (30% + 20%, 4 moves) | full: 3 cached + 4 terminal/14 total (21% + 29%, 5 moves)",
+        "[Search reuse] fast: 0 skipped + 0 terminal/0 total (N/A + N/A, 0 moves) | full: 0 cached + 0 terminal/0 total (N/A + N/A, 0 moves)",
+        "[Search reuse total] fast: 3 skipped + 2 terminal/10 total (30% + 20%, 4 moves) | full: 5 cached + 5 terminal/17 total (29% + 29%, 6 moves)",
     ]
 
 
@@ -51,6 +51,6 @@ def test_short_run_drains_worker_queue_before_final_report(cpu_only, capsys):
                                                      full_requested_evals=2 * moves)))
     utils.metrics_daemon(stop, [snapshots], None if cpu_only else Queue(), utils.ThreadSafeCounter(), 1)
     assert capsys.readouterr().out.strip() == (
-        "[Search reuse total] fast: 0 skipped/0 total(N/A, 0 moves) | "
-        "full: 0 cached + 12 terminal/36 total(0% + 33%, 12 moves)"
+        "[Search reuse total] fast: 0 skipped + 0 terminal/0 total (N/A + N/A, 0 moves) | "
+        "full: 0 cached + 12 terminal/36 total (0% + 33%, 12 moves)"
     )

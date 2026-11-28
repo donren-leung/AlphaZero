@@ -15,7 +15,7 @@ def test_resume_in_checkpoint_folder(tmp_path):
     torch.save(optimizer.state_dict(), directory / "optimizer_018.pt")
     metadata = directory / "args.json"
     metadata.write_text('{"random_seed": 9, "inference_max_batch_size": 128}')
-    args = parse_args(["chess", "--resume", str(checkpoint), "--i", "2"])
+    args = parse_args(["chess", "--resume", str(checkpoint), "--iter", "2"])
     trainer = AlphaZero(args, model, optimizer, {"architecture": "resnet"})
     assert trainer.artifact_dir == directory
     assert trainer.start_iteration == 19

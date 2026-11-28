@@ -10,6 +10,7 @@ class WorkerTotals(NamedTuple):
 
     fast_moves: int = 0
     fast_skipped_rounds: int = 0
+    fast_terminal_rounds: int = 0
     fast_budget_rounds: int = 0
 
     full_moves: int = 0
@@ -19,7 +20,6 @@ class WorkerTotals(NamedTuple):
 
     def since(self, previous: "WorkerTotals") -> "WorkerTotals":
         return WorkerTotals(*(new - old for new, old in zip(self, previous, strict=True)))
-
 
 class WorkerMetrics(NamedTuple):
     worker_id: int
