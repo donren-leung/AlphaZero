@@ -32,7 +32,7 @@ def evaluate(request: AZ_NodeRequest) -> SparseLegalPolicy:
 @pytest.fixture
 def worker_evaluator(monkeypatch):
     worker = GameWorker(
-        TicTacToeGame, num_games=1, worker_id=0, random_seed=0,
+        TicTacToeGame, num_games=1, worker_id=0, random_seed=0, iteration=0,
         MCTS_factory=MCTS_Factory(64), in_queue=Mock(), out_queue=Mock(),
         output_games=Mock(), metrics_queue=Mock(),
     )

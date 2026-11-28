@@ -239,8 +239,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     batch_size=DEFAULT_BATCH_SIZE, inference_max_batch_size=DEFAULT_INFERENCE_MAX_BATCH_SIZE,
                     learning_rate=DEFAULT_LEARNING_RATE, weight_decay=DEFAULT_WEIGHT_DECAY,
                     gpu=DEFAULT_GPU, iter=DEFAULT_ITERATIONS, epochs=DEFAULT_EPOCHS,
-                    architecture=DEFAULT_ARCHITECTURE, blocks=DEFAULT_BLOCKS,
-                    channels=DEFAULT_CHANNELS, head_channels=DEFAULT_HEAD_CHANNELS,
+                    # None means user omitted the setting.
+                    # training_model_args() can then use the checkpoint’s saved setting or,
+                    # for a fresh run, the corresponding DEFAULT_*
+                    architecture=None, blocks=None,
+                    channels=None, head_channels=None,
                     resume=None, seed=DEFAULT_SEED)
     if resume_in_place:
         directory = args.resume.expanduser().resolve().parent

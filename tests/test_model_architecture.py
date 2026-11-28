@@ -49,12 +49,13 @@ def test_training_and_worker_checkpoint_round_trip(architecture, tmp_path, monke
     assert resumed.start_iteration == 4
     assert resumed.optimizer.state_dict()["state"]
 
-    def evaluate_with_worker(game_type, rollouts, processes, workers, games, model_args, seed):
+    def evaluate_with_worker(game_type, rollouts, processes, workers, games, model_args, seed, iteration):
+        assert iteration == 4
         worker = GPU_AZ_Worker([], [], None, model_args) # type: ignore 
         return worker.model.eval()(boards)
 
     monkeypatch.setattr(training, "self_play", evaluate_with_worker)
-    result = resumed.self_play(resumed.args.game_type, 1, 1, 1, 1, 42)
+    result = resumed.self_play(resumed.args.game_type, 1, 1, 1, 1, 42, iteration=resumed.start_iteration)
     torch.testing.assert_close(result, run.model.eval()(boards))
 
     sys.argv.extend(["--architecture", "se_resnet" if architecture == "resnet" else "resnet"])
