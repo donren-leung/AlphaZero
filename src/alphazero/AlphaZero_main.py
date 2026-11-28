@@ -1,5 +1,4 @@
 import argparse
-from collections import Counter
 import multiprocessing as mp
 import json
 import re
@@ -17,12 +16,13 @@ from tqdm import trange
 from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, SparseLegalPolicy
 from .batching.AZ_GameWorker import GameWorker
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
+from .batching.Metrics import WorkerMetrics
 from .batching.Queues import mpQueueGen
 from .games.GameBase import GameBase
 from .games.GameStateBase import GameStateBase, CompactRepr
 from .MCTS.MCTS_AlphaZero import MCTS_Factory
-from .models.model import ResNet
-from .utils import parse_args, metrics_daemon, ThreadSafeCounter
+from .models.model import DEFAULT_ARCHITECTURE, create_model
+from .utils import parse_args, training_model_args, metrics_daemon, ThreadSafeCounter
 
 GameStateT = TypeVar("GameStateT", bound=GameStateBase)
 
@@ -33,7 +33,8 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-         RANDOM_SEED: int
+         RANDOM_SEED: int,
+         iteration: int
     ) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
@@ -57,7 +58,7 @@ def self_play(
     ]
 
     # Cumulative moves
-    worker_metrics_queues: list[mpQueueGen[tuple[int, int, int, int, int, int]]] = []
+    worker_metrics_queues: list[mpQueueGen[WorkerMetrics]] = []
     # Batch total, batches
     eval_metrics_queue: mpQueueGen[tuple[int, list[tuple], dict]] = mpQueueGen(ctx)
 
@@ -68,7 +69,7 @@ def self_play(
         eval_worker_ps.append(p)
 
     for i, results_queue in enumerate(results_queues):
-        worker_metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]] = mpQueueGen(ctx)
+        worker_metrics_queue: mpQueueGen[WorkerMetrics] = mpQueueGen(ctx)
         worker_metrics_queues.append(worker_metrics_queue)
         game_worker = GameWorker(game_type,
                                  num_games=GAME_WORKER_GAMES,
@@ -78,7 +79,8 @@ def self_play(
                                  metrics_queue=worker_metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory,
-                                 random_seed=RANDOM_SEED)
+                                 random_seed=RANDOM_SEED,
+                                 iteration=iteration)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
         game_worker_ps.append(p)
 
@@ -92,11 +94,24 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queues, eval_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[CompactRepr, SparseLegalPolicy, int]] = []
+    # Collect all game results and return in sorted order for reproducibility.
+    examples_by_game: dict[str, list[tuple[CompactRepr, SparseLegalPolicy, int]]] = {}
     for _ in range(expecting_results):
-        _, game = all_game_results.get()
+        game_id, game = all_game_results.get()
         counter.increment()
-        memory.extend(zip(game.history['states'], game.history['MCTS_results'], game.history['outcome'], strict=True))
+        examples_by_game[game_id] = list(zip(
+            game.history['states'],
+            game.history['MCTS_results'],
+            game.history['outcome'],
+            strict=True
+        ))
+
+    memory = [
+        example
+        for game_id in sorted(examples_by_game)
+        for example in examples_by_game[game_id]
+    ]
+    del examples_by_game
 
     for i, game_worker_p in enumerate(game_worker_ps):
         game_worker_p.join()
@@ -131,12 +146,21 @@ class AlphaZero:
             f"_b{args.batch_size}"
             f"_e{args.epochs}"
         )
+        architecture = model_args["architecture"]
+        if architecture != DEFAULT_ARCHITECTURE:
+            settings_name += f"_{architecture}"
+
+        # For a separate resumed run, include the source folder and checkpoint in the name.
+        # Seed, inference batch size, learning rate, and weight decay are omitted,
+        # so runs from the same checkpoint that differ only in those values share
+        # an output directory.
+        # An in-place resume (args.resume_in_place) rewrites self.artifiact_dir
+        # to be the checkpoint folder below.
         if args.resume is not None:
             settings_name += f"_resume_{args.resume.parent.name}_{args.resume.stem}"
 
         project_root = Path(__file__).resolve().parent.parent.parent
         self.artifact_dir = project_root / "artifacts" / settings_name
-        self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
         self.start_iteration = 0
         if args.resume is not None:
@@ -173,14 +197,24 @@ class AlphaZero:
             checkpoint_iteration = int(model_path.stem.removeprefix("model_"))
             self.start_iteration = checkpoint_iteration + 1
 
+            if args.resume_in_place:
+                self.artifact_dir = model_path.parent
+                for iteration in range(self.start_iteration, self.start_iteration + args.iter):
+                    for prefix in ("model", "optimizer"):
+                        destination = self.artifact_dir / f"{prefix}_{iteration:03d}.pt"
+                        if destination.exists():
+                            raise FileExistsError(f"Resume would overwrite {destination}")
             print(f"Resumed from {model_path}")
 
-        self.model_args["state_dict"] = self.model.state_dict()
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        args_path = self.artifact_dir / "args.json"
+        if args.resume_in_place and args_path.is_file():
+            return
 
         args_payload = {k: v for k, v in model_args.items() if k not in ("batch_size", "state_dict")}
+        args_payload["architecture"] = architecture
         args_payload["resume_from"] = (str(args.resume.expanduser().resolve()) if args.resume is not None else None)
 
-        args_path = self.artifact_dir / "args.json"
         with open(args_path, "w") as f:
             json.dump(args_payload, f, indent=4)
 
@@ -196,12 +230,21 @@ class AlphaZero:
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
                   GAME_WORKER_GAMES: int,
-                  RANDOM_SEED: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
-        self.model_args["state_dict"] = self.model.state_dict()
-        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, self.model_args, RANDOM_SEED)
+                  RANDOM_SEED: int,
+                  iteration: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
+        worker_args = {**self.model_args, "state_dict": self.model.state_dict()}
+        return self_play(
+            GAME_TYPE, ROLLOUTS,
+            PROCESSES, TARGET_GAME_WORKERS,
+            GAME_WORKER_GAMES, worker_args,
+            RANDOM_SEED, iteration
+        )
 
-    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
-        random.shuffle(memory)
+    def train(self,
+              GAME_TYPE: type[GameBase[GameStateBase]],
+              memory: list[tuple[CompactRepr, SparseLegalPolicy, int]],
+              shuffle_rng: random.Random) -> None:
+        shuffle_rng.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size, mininterval=2.5, desc="Training"):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
@@ -241,14 +284,17 @@ class AlphaZero:
                 self.args.processes,
                 self.args.game_workers,
                 self.args.games_per_worker,
-                self.args.seed
+                self.args.seed,
+                iteration
             )
 
             self.model.to("cuda")
             self.move_optimizer_state("cuda")
             self.model.train()
+
+            shuffle_rng = random.Random(f"training:{self.args.seed}:{iteration}")
             for epoch in trange(self.args.epochs):
-                self.train(self.args.game_type,memory)
+                self.train(self.args.game_type, memory, shuffle_rng)
 
             torch.save(
                 self.model.state_dict(),
@@ -275,22 +321,10 @@ def print_cuda_memory(label: str):
 def main():
     args = parse_args()
 
-    model_args = {
-        "game_input_channels": args.game_type.input_channels,
-        "game_spatial_size": args.game_type.row_count * args.game_type.col_count,
-        "game_action_size": args.game_type.action_size,
-        "num_resBlocks": args.blocks,
-        "num_channels": args.channels,
-        "head_hidden_size": args.head_channels,
-        "batch_size": args.batch_size,
-        "inference_max_batch_size": args.inference_max_batch_size,
-        "learning_rate": args.learning_rate,
-        "weight_decay": args.weight_decay,
-        "state_dict": None,
-        "random_seed": args.seed
-    }
+    model_args = training_model_args(args)
+    torch.manual_seed(args.seed)
+    model = create_model(**model_args)
 
-    model = ResNet(**model_args)
     optimizer = torch.optim.AdamW(model.parameters(), lr=model_args["learning_rate"], weight_decay=model_args["weight_decay"])
 
     az = AlphaZero(args, model, optimizer, model_args)

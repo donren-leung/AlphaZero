@@ -17,14 +17,17 @@ poetry install
 # Run 4 self-play iterations of ConnectFour with MCTS rollouts of 30 and inferencing at b=256.
 # Use 6 ResBlocks with 64 channels.
 # Initialise 12 CPU workers to manage 256 games each. Train each iteration over 2 epochs at b=128.
-python3 -m alphazero.selfplay -r 30 -p 1 -gw 12 -gpw 512 -b 128 -ib 256 -bl 6 -ch 64 --gpu -i 4 -e 2 c4
+python3 -m alphazero.selfplay c4 -r 30 -p 1 -gw 12 -gpw 512 -b 128 -ib 256 -bl 6 -ch 64 --gpu -i 4 -e 2
 
 # Play a game of ConnectFour against the self-trained model, opting computer to play first.
 python3 -m alphazero.main --s -w artifacts/connectfour_r30_p1_gw12_gpw512_b128_e2/model_003.pt --game-type c4
 
 # Run 8 self-play iterations of chess with MCTS rollouts of 400 and inferencing at b=256.
 # Initialise 34 CPU workers to manage 1024 games each. Train each iteration over 2 epochs at b=128.
-python3 -m alphazero.selfplay -r 400 -p 1 -gw 34 -gpw 1024 -b 128 -ib 256 --gpu -i 8 -e 2 chess
+python3 -m alphazero.selfplay chess -r 400 -p 1 -gw 34 -gpw 1024 -b 128 -ib 256 --gpu -i 8 -e 2
+
+# Overrides default ResBlocks for Squeeze-and-Excite Blocks.
+python3 -m alphazero.selfplay c4 --architecture se_resnet -r 30 -p 1 -gw 17 -gpw 512 -b 128 -ib 256 -bl 6 -ch 64 --gpu -i 4 -e 2
 ```
 
 ## High-Throughput Pipeline

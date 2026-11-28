@@ -8,7 +8,7 @@ from typing import Any, Callable, Counter, Self, cast
 import torch
 import numpy as np
 
-from alphazero.models.model import ResNet
+from alphazero.models.model import create_model
 
 from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, BatchSparseLegalPolicy
 from .Queues import mpQueueGen
@@ -103,9 +103,8 @@ class GPU_AZ_Worker(object):
         self.metrics_queue = metrics_queue
 
         self.batch_size = model_args["inference_max_batch_size"]
-        model_args = {k: v for k, v in model_args.items() if k != "batch_size"}
         self.device = torch.device("cuda")
-        self.model = ResNet(**model_args)
+        self.model = create_model(**model_args)
 
     def run(self) -> None:
         self.model.to(self.device)
@@ -133,7 +132,7 @@ class GPU_AZ_Worker(object):
         collector_thread.start()
 
         window_start = time.perf_counter()
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
             while True:
                 item = self.ready_batches.get()
                 if item is None:

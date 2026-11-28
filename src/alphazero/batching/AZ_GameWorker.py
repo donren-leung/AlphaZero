@@ -2,13 +2,14 @@ import logging
 import time
 
 from queue import Queue, Empty
-from threading import Thread, Lock, Condition
+from threading import Thread, Lock, Condition, Event
 from typing import Generic, Self, TypeVar, Type, cast
 
 import numpy as np
 
 from .NodeBatch import AZ_NodeBatchRequest, AZ_NodeRequest, AZ_NodeBatchResponse, BatchSparseLegalPolicy, SparseLegalPolicy
 from .Queues import mpQueueGen
+from .Metrics import WorkerMetrics, WorkerTotals
 from alphazero.games.GameBase import GameBase
 from alphazero.games.GameStateBase import GameStateBase
 from alphazero.MCTS.MCTS_AlphaZero import MCTS_Factory, Node
@@ -33,20 +34,22 @@ class GameWorker(Generic[GameStateT], object):
                  num_games: int, output_games: mpQueueGen[tuple[str, GameBase[GameStateT]]],
                  in_queue: mpQueueGen[AZ_NodeBatchResponse],
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
-                 metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]],
+                 metrics_queue: mpQueueGen[WorkerMetrics],
                  worker_id: int, MCTS_factory: MCTS_Factory,
-                 random_seed: int):
+                 random_seed: int,
+                 iteration: int):
         self.game_type = game_type
         self.num_games = num_games
 
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
         self.random_seed = random_seed
+        self.iteration = iteration
 
         # Threading
         # Multiprocess stuff
         self.in_queue:      mpQueueGen[AZ_NodeBatchResponse]               = in_queue
-        self.metrics_queue: mpQueueGen[tuple[int, int, int, int, int, int]]= metrics_queue
+        self.metrics_queue = metrics_queue
 
         self.out_queue:     mpQueueGen[AZ_NodeBatchRequest | None]         = out_queue
         self.output_games:  mpQueueGen[tuple[str, GameBase[GameStateT]]]   = output_games
@@ -64,6 +67,14 @@ class GameWorker(Generic[GameStateT], object):
         self.sent_requests = 0
         self.received_batches = 0
         self.received_results = 0
+        self.fast_moves = 0
+        self.fast_skipped_rounds = 0
+        self.fast_terminal_rounds = 0
+        self.fast_budget_rounds = 0
+        self.full_moves = 0
+        self.full_cached_evals = 0
+        self.full_terminal_evals = 0
+        self.full_requested_evals = 0
         self.active_games = 0
 
     def run(self) -> None:
@@ -73,7 +84,9 @@ class GameWorker(Generic[GameStateT], object):
         self.staging_out_queue: Queue[AZ_NodeRequest] = Queue()
         Thread(target=self.inbound_mailman_d, args=[], daemon=True).start()
         Thread(target=self.outbound_mailman_d, args=[], daemon=True).start()
-        Thread(target=self.metrics_d, args=[], daemon=True).start()
+        games_finished = Event()
+        metrics_thread = Thread(target=self.metrics_d, args=(games_finished,), daemon=True)
+        metrics_thread.start()
 
         for i in range(self.num_games):
             new_game_instance = self.game_type()
@@ -89,6 +102,10 @@ class GameWorker(Generic[GameStateT], object):
 
         for thread in self.threads:
             thread.start()
+        for thread in self.threads:
+            thread.join()
+        games_finished.set()
+        metrics_thread.join()
 
     def inbound_mailman_d(self) -> None:
         """
@@ -178,78 +195,85 @@ class GameWorker(Generic[GameStateT], object):
             if requests:
                 first_request_time = time.perf_counter()
 
-    def metrics_d(self) -> None:
+    def metrics_d(self, games_finished: Event) -> None:
         while True:
-            time.sleep(self.metrics_interval_s)
+            finished = games_finished.wait(self.metrics_interval_s)
             with self.metrics_lock:
-                self.metrics_queue.put(
-                    (self.worker_id,
-                    self.total_moves,
-                    self.sent_batches,
-                    self.sent_requests,
-                    self.received_batches,
-                    self.received_results)
+                totals = WorkerTotals(
+                    moves=self.total_moves, sent_batches=self.sent_batches, sent_requests=self.sent_requests,
+                    received_batches=self.received_batches, received_results=self.received_results,
+                    fast_moves=self.fast_moves, fast_skipped_rounds=self.fast_skipped_rounds,
+                    fast_terminal_rounds=self.fast_terminal_rounds, fast_budget_rounds=self.fast_budget_rounds,
+                    full_moves=self.full_moves,
+                    full_cached_evals=self.full_cached_evals, full_terminal_evals=self.full_terminal_evals,
+                    full_requested_evals=self.full_requested_evals,
                 )
+            self.metrics_queue.put(WorkerMetrics(self.worker_id, totals))
+            if finished:
+                return
 
-    # TODO: might migrate to MCTS
+    def _evaluate_leaf(self, request: AZ_NodeRequest) -> SparseLegalPolicy:
+        # Send batch request to worker pool.
+        thread_id = request.thread_idx
+
+        # Get or wait (block thread) for the result.
+        self.staging_out_queue.put(request)
+        with self.inbox_cv[thread_id]:
+            while self.thread_inbox[thread_id] is None:
+                self.inbox_cv[thread_id].wait()
+            delivery = self.thread_inbox[thread_id]
+            self.thread_inbox[thread_id] = None
+
+        assert delivery is not None
+        batch, start, end, row = delivery
+        return SparseLegalPolicy(
+            batch.legal_actions[start:end], batch.probs[start:end], batch.values[row].item()
+        )
+
     def search_move(self,
                     thread_id: int,
                     game: GameBase[GameStateT],
-                    initial_root: Node | None,
-                    rng: np.random.Generator):
-        MCTS_instance = self.MCTS_factory.make_instance(game=game, root=initial_root)
+                    previous_root: Node | None,
+                    rng: np.random.Generator, *,
+                    fast: bool):
+        # If fast, continue search from the previous MCTS tree.
+        # Otherwise, if previous_root is given, we may use that for cached evals.
+        cache_root = None if fast else previous_root
+        MCTS_instance = self.MCTS_factory.make_instance(game=game, root=previous_root if fast else None)
+
         try:
-            while MCTS_instance.root.visits <= MCTS_instance.num_rollouts(initial_root is not None):
-                # While not enough rollouts:
-                logging.debug(f"thread {thread_id} {MCTS_instance.root.visits} visits, not enough")
-                # Make next batch
-                logging.debug(f"{MCTS_instance.root=}")
-                node, request_or_response = MCTS_instance.one_round_batch(thread_id)
-
-                if isinstance(request_or_response, AZ_NodeRequest):
-                    # Send batch request to worker pool.
-                    self.staging_out_queue.put(request_or_response)
-
-                    # Get or wait (block thread) for the result.
-                    self.inbox_cv[thread_id].acquire()
-                    # NOTE: Is this while loop strictly needed??
-                    while self.thread_inbox[thread_id] is None:
-                        self.inbox_cv[thread_id].wait()
-                    delivery = self.thread_inbox[thread_id]
-                    self.thread_inbox[thread_id] = None
-                    self.inbox_cv[thread_id].release()
-
-                    assert delivery is not None
-                    batch, start, end, row = delivery
-
-                    legal_actions = batch.legal_actions[start:end]
-                    probs = batch.probs[start:end]
-                    value = float(batch.values[row])
-
-                    # Introduce Dirichlet noise to root node for exploration
-                    # but only if in full search mode (want to maximise strength in fast)
-                    if node is MCTS_instance.root and initial_root is None:
-                        num_legal = legal_actions.shape[0]
-                        alpha = self.MCTS_factory.DIRICHLET_CONST / num_legal
-                        noise = rng.dirichlet(np.full(num_legal, alpha)).astype(np.float32)
-
-                        probs = (
-                            (1.0 - self.MCTS_factory.dirichlet_epsilon) * probs
-                            + self.MCTS_factory.dirichlet_epsilon * noise
-                        ).astype(np.float32, copy=False)
-
-                    # Update prior probability from the neural network output
-                    node.expand(legal_actions, probs)
-                    node.backpropogate(1, value, False, MCTS_instance.game_state)
-
-                    del delivery, batch, legal_actions, probs
+            # A fresh root needs one expansion round before rounds can visit its children.
+            round_budget = 1 + MCTS_instance.num_rollouts(fast)
+            cached_evals = requested_evals = terminal_evals = 0
+            while MCTS_instance.root.visits < round_budget:
+                node, result = MCTS_instance.one_round_batch(thread_id, cache_root)
+                if isinstance(result, AZ_NodeRequest):
+                    result = self._evaluate_leaf(result)
+                    requested_evals += 1
+                # else, result is a SparseLegalPolicy from a terminal node or cached evaluation.
+                elif result.legal_actions.size == 0:
+                    # terminal nodes can be backpropagated immediately; cached ones need to be expanded first.
+                    node.backpropogate(1, result.value, True, MCTS_instance.game_state)
+                    terminal_evals += 1
+                    continue
                 else:
-                    # Cached result; no request is sent.
-                    logging.debug(f"thread {thread_id} (cached) batchresponse")
-                    node.backpropogate(1, request_or_response.value, True, MCTS_instance.game_state)
+                    cached_evals += 1
 
-                # if self.MCTS_factory.debug > 0:
-                #     MCTS_instance.root.print_children(0, limit=2)
+                # Introduce Dirichlet noise to root node for exploration
+                # but only if in full search mode (want to maximise strength in fast). In other words:
+                # Fast mode inherits a bit of the dirichlet noise from previous root through previously done work.
+                # Full mode draws its own noise.
+                probs = result.probs
+                if node is MCTS_instance.root and not fast:
+                    alpha = self.MCTS_factory.DIRICHLET_CONST / probs.size
+                    noise = rng.dirichlet(np.full(probs.size, alpha)).astype(np.float32)
+                    epsilon = self.MCTS_factory.dirichlet_epsilon
+                    probs = ((1.0 - epsilon) * probs + epsilon * noise).astype(np.float32)
+
+                node.expand(result.legal_actions, probs, result.value)
+                node.backpropogate(1, result.value, False, MCTS_instance.game_state)
+                # Release views into the shared response batch before waiting for the next one.
+                del probs, result
 
             # Extract final MCTS statistics
             root = MCTS_instance.root
@@ -258,9 +282,9 @@ class GameWorker(Generic[GameStateT], object):
             sparse_probs = root.ints[1].astype(np.float32)
             sparse_probs /= sparse_probs.sum(dtype=np.float32)
 
-            # If we did a full search i.e. not fast, provided root was None then
-            # we append to history.
-            if initial_root is None:
+            rounds_run = cached_evals + terminal_evals + requested_evals
+            if not fast:
+                assert rounds_run == round_budget, f"Full search counted {rounds_run} of {round_budget} rounds"
                 game.history['states'].append(game.state.to_compact_repr(game.current_player))
                 game.history['MCTS_results'].append(SparseLegalPolicy(
                     legal_actions=legal_actions_arr,
@@ -269,18 +293,33 @@ class GameWorker(Generic[GameStateT], object):
                 ))
                 game.history['player'].append(game.current_player)
 
+            with self.metrics_lock:
+                if fast:
+                    self.fast_moves += 1
+                    self.fast_budget_rounds += round_budget
+                    self.fast_terminal_rounds += terminal_evals
+                    self.fast_skipped_rounds += round_budget - rounds_run
+                else:
+                    self.full_moves += 1
+                    self.full_cached_evals += cached_evals
+                    self.full_terminal_evals += terminal_evals
+                    self.full_requested_evals += requested_evals
+
             return legal_actions_arr, sparse_probs, MCTS_instance
         except Exception as e:
             MCTS_instance.dispose(kept_child=None)
             logging.error(f"thread {thread_id} exception: {e}")
             raise
+        finally:
+            if cache_root is not None:
+                cache_root.clear_subtree()
 
     def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
-        rng = np.random.default_rng([self.random_seed, self.worker_id, thread_id])
+        rng = np.random.default_rng([self.iteration, self.random_seed, self.worker_id, thread_id])
 
-        first_player = game.current_player
-        initial_root = None
+        fast = False
+        previous_root = None
         while True:
             logging.debug(f"thread {thread_id} move {len(game.history.get('states', []))}")
 
@@ -288,23 +327,14 @@ class GameWorker(Generic[GameStateT], object):
             legal_actions_arr, sparse_probs, MCTS_instance = self.search_move(
                 thread_id,
                 game,
-                initial_root=initial_root,
-                rng=rng
+                previous_root=previous_root,
+                rng=rng,
+                fast=fast,
             )
 
             temperature_probs = np.power(sparse_probs, 1.0 / self.MCTS_factory.temperature)
             temperature_probs /= np.sum(temperature_probs, dtype=np.float32)
             action = int(rng.choice(legal_actions_arr, p=temperature_probs))
-
-            # Next move is randomly a fast (reuse) or slow (restart) MCTS search.
-            # Based on https://arxiv.org/pdf/1902.10565v5 (KataGo) "Playout Cap Randomization"
-            # If fast, keep previous root; dispose of all child nodes except for the chosen one.
-            if rng.random() < self.MCTS_factory.fast_rollouts_chance:
-                initial_root = MCTS_instance.get_child_by_action(action)
-                MCTS_instance.dispose(kept_child=initial_root)
-            else:
-                initial_root = None
-                MCTS_instance.dispose(kept_child=None)
 
             game.make_move(action)
 
@@ -314,25 +344,22 @@ class GameWorker(Generic[GameStateT], object):
 
             value, terminated = game.get_value_and_terminated()
             if terminated:
+                MCTS_instance.dispose()
                 assert len(game.history['states']) == len(game.history['MCTS_results']) == len(game.history['player'])
-                hist_player = first_player
                 last_player = game.get_opponent(game.current_player)
 
                 for hist_player in game.history['player']:
                     outcome = value if hist_player == last_player else -value
                     game.history['outcome'].append(outcome)
 
-                to_clear = [initial_root]
-                while to_clear:
-                    node = to_clear.pop()
-                    if node is not None:
-                        to_clear.extend((child for child in node.children if child is not None))
-                        node.children.clear()
-                        node.parent = None
-
-                del MCTS_instance
                 break
 
+            # Based on https://arxiv.org/pdf/1902.10565v5 (KataGo) "Playout Cap Randomization"
+            # Next move is randomly a fast (reuse) or slow (use previous tree as cache) MCTS search.
+            # Keep previous root; dispose of all child nodes except for the chosen one.
+            fast = rng.random() < self.MCTS_factory.fast_rollouts_chance
+            previous_root = MCTS_instance.get_child_by_action(action)
+            MCTS_instance.dispose(kept_child=previous_root)
             del MCTS_instance
 
         # Game finished
