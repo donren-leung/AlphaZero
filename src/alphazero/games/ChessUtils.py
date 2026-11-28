@@ -1,14 +1,14 @@
-from collections import Counter
-from dataclasses import dataclass, field
-from typing import Hashable, Sequence
+from typing import Sequence
 
-import chess
+import bulletchess as chess
 import numpy as np
 from numpy.typing import NDArray
 
 CHESS_ENCODING_VERSION = 1
 CHESS_INPUT_VERSION = 1
-CHESS_ACTION_SIZE = 8 * 8 * 73
+CHESS_SQUARE_SIZE = 64
+CHESS_ACTION_PLANES = 73
+CHESS_ACTION_SIZE = CHESS_SQUARE_SIZE * CHESS_ACTION_PLANES
 CHESS_INPUT_CHANNELS = 119
 
 TIME_STEP_LAYERS = 14
@@ -30,96 +30,128 @@ KNIGHT_OFFSETS = (
 UNDERPROMOTION_DIRECTIONS = ((-1, 1), (0, 1), (1, 1))
 UNDERPROMOTION_PIECES = (chess.KNIGHT, chess.BISHOP, chess.ROOK)
 
+_PIECES = tuple(chess.Piece(c, p) for c in (chess.WHITE, chess.BLACK) for p in chess.PIECE_TYPES)
+
+type ActionTables = tuple[dict[chess.Move, int], list[chess.Move | None], dict[int, chess.Move | None]]
+
+def _action_tables(white: bool) -> ActionTables:
+    """
+    Precomputes the dual mapping between a chess move and its action idx in [0, 4672).
+    Index v1 policies file-first, with ranks mirrored for Black.
+    """
+    moves: list[tuple[int, int, chess.PieceType | None]] = []
+
+    # Queen moves: Horizontal, vertical, and diagonal moves
+    moves.extend(
+        (distance * df, distance * dr, None)
+        for distance in range(1, 8) for df, dr in QUEEN_DIRECTIONS
+    )
+
+    # Knight moves
+    moves.extend((df, dr, None) for df, dr in KNIGHT_OFFSETS)
+
+    # Underpromotion moves
+    moves.extend((df, dr, piece) for df, dr in UNDERPROMOTION_DIRECTIONS for piece in UNDERPROMOTION_PIECES)
+    
+    move_to_action: dict[chess.Move, int] = {}
+    # A move pattern that goes off the board will stay as None
+    action_to_move: list[chess.Move | None] = [None] * CHESS_ACTION_SIZE
+    # If key is missing: decoder returns the move in action_to_move.
+    # This includes normal moves and underpromotions (already explicitly encoded)
+    # If key is present with value None: check if it's a pawn
+    # Key and value present: it's a pawn promotion to queen, return the value (queen move)
+    queen_promotions: dict[int, chess.Move | None] = {}
+
+    # rank bits | file bits
+    #    rrr    |    fff
+    # We want to flip the rank bits for black, but keep file bits
+    # XOR by 0b111000 = 56
+    flip = 56 if not white else 0
+
+    for position in range(CHESS_SQUARE_SIZE):
+        # Our encoding is file-first, but chess.SQUARES is rank-first, so we need to convert
+        file, rank = divmod(position, 8)
+        source = chess.SQUARES[(rank * 8 + file) ^ flip]
+        for plane, (df, dr, promotion) in enumerate(moves):
+            dest_file, dest_rank = file + df, rank + dr
+            if not (0 <= dest_file < 8 and 0 <= dest_rank < 8):
+                continue
+            if promotion is not None and dest_rank != 7:
+                continue
+
+            target = chess.SQUARES[(dest_rank * 8 + dest_file) ^ flip]
+            action = position * CHESS_ACTION_PLANES + plane
+            move = chess.Move(source, target, promotion)
+
+            action_to_move[action] = move
+            move_to_action[move] = action
+
+            if promotion is None and dest_rank == 7:
+                # Marks this action as reaching the back rank.
+                # The initial None means that if a pawn tries to use it,
+                # decoding must reject it except for below case:
+                # a valid queen-promotion move is made
+                # i.e. made on 7th rank with df in [-1, 0, 1].
+                queen_promotions[action] = None
+                if rank == 6 and abs(df) <= 1:
+                    queen = chess.Move(source, target, chess.QUEEN)
+                    move_to_action[queen] = action
+                    queen_promotions[action] = queen
+
+    return move_to_action, action_to_move, queen_promotions
+
+_ACTIONS = {chess.WHITE: _action_tables(True), chess.BLACK: _action_tables(False)}#
+
 def _check_player(board: chess.Board, player: int) -> None:
     assert type(player) is int and player in (1, -1), "player must be 1 (White) or -1 (Black)"
-    assert board.turn == (player == 1), "player must match board.turn"
-    if board.chess960:
-        raise ValueError("Chess960 is not supported by this standard-chess action codec")
+    assert (board.turn == chess.WHITE) == (player == 1), "player must match board.turn"
 
-def _neutral_square(square: chess.Square, player: int) -> chess.Square:
-    return square if player == 1 else chess.square_mirror(square)
-
-def _unneutral_square(square: chess.Square, player: int) -> chess.Square:
-    return square if player == 1 else chess.square_mirror(square)
+def legal_mask(board: chess.Board) -> NDArray[np.bool_]:
+    move_to_action = _ACTIONS[board.turn][0]
+    mask = np.zeros(CHESS_ACTION_SIZE, dtype=np.bool_)
+    for move in board.legal_moves():
+        mask[move_to_action[move]] = True
+    return mask
 
 def encode_move(board: chess.Board, move: chess.Move, player: int) -> int:
     """
-    Encode a legal standard-chess move as an integer in [0, 4672).
+    Encodes a legal standard-chess move as an integer in [0, 4672).
     Assumes given move is legal i.e. generated by board.legal_moves.
+    Uses the lookup table; this only checks moves land in-bounds.
     """
     _check_player(board, player)
-
-    source = _neutral_square(move.from_square, player)
-    target = _neutral_square(move.to_square, player)
-    df = chess.square_file(target) - chess.square_file(source)
-    dr = chess.square_rank(target) - chess.square_rank(source)
-
-    if move.promotion in UNDERPROMOTION_PIECES:
-        try:
-            direction = UNDERPROMOTION_DIRECTIONS.index((df, dr))
-        except ValueError as exc:
-            raise ValueError(f"Invalid underpromotion vector: {(df, dr)}") from exc
-        plane = 64 + direction * 3 + UNDERPROMOTION_PIECES.index(move.promotion)
-    elif (df, dr) in KNIGHT_OFFSETS:
-        plane = 56 + KNIGHT_OFFSETS.index((df, dr))
-    else:
-        distance = max(abs(df), abs(dr))
-        if not 1 <= distance <= 7 or not (
-            # horizontal, vertical, or diagonal move
-            df == 0 or dr == 0 or abs(df) == abs(dr)
-        ):
-            raise ValueError(f"Unrepresentable move vector: {(df, dr)}")
-        step = (df // distance if df else 0, dr // distance if dr else 0)
-        plane = (distance - 1) * 8 + QUEEN_DIRECTIONS.index(step)
-
-    return (chess.square_file(source) * 8 + chess.square_rank(source)) * 73 + plane
+    try:
+        return _ACTIONS[board.turn][0][move]
+    except KeyError as exc:
+        raise ValueError(f"Unrepresentable move {move}") from exc
 
 def decode_action(board: chess.Board, action: int, player: int) -> chess.Move:
-    """Decode an action, rejecting off-board moves but largely assumes move legality."""
+    """
+    Decode an action, rejecting off-board moves but largely assumes move legality.
+    """
     _check_player(board, player)
     if type(action) is not int or not 0 <= action < CHESS_ACTION_SIZE:
         raise ValueError(f"action must be an integer in [0, {CHESS_ACTION_SIZE}), got {action=}")
 
-    position, plane = divmod(action, 73)
-    source_file, source_rank = divmod(position, 8)
-    source = chess.square(source_file, source_rank)
-    promotion = None
+    _, action_to_moves, queens = _ACTIONS[board.turn]
+    move = action_to_moves[action]
+    if move is None:
+        raise ValueError(f"Action {action} points off the board or encodes an impossible promotion")
+    if action in queens:
+        piece = board[move.origin]
+        if piece is not None and piece.piece_type == chess.PAWN:
+            queen = queens[action]
+            if queen is None:
+                raise ValueError(f"Action {action} encodes an impossible promotion")
+            return queen
+    return move
 
-    if plane < 56:
-        distance, direction = divmod(plane, 8)
-        df, dr = QUEEN_DIRECTIONS[direction]
-        df *= distance + 1
-        dr *= distance + 1
-    elif plane < 64:
-        df, dr = KNIGHT_OFFSETS[plane - 56]
-    else:
-        direction, piece = divmod(plane - 64, 3)
-        df, dr = UNDERPROMOTION_DIRECTIONS[direction]
-        promotion = UNDERPROMOTION_PIECES[piece]
-
-    target_file, target_rank = source_file + df, source_rank + dr
-    if not (0 <= target_file < 8 and 0 <= target_rank < 8):
-        raise ValueError(f"Action {action} points off the board")
-
-    target = chess.square(target_file, target_rank)
-    from_sq = _unneutral_square(source, player)
-    to_sq = _unneutral_square(target, player)
-
-    if promotion is None:
-        chess_piece = board.piece_at(from_sq)
-        if (
-            chess_piece is not None
-            and chess_piece.piece_type == chess.PAWN
-            and chess.square_rank(target) == 7
-        ):
-            promotion = chess.QUEEN
-
-    return chess.Move(from_sq, to_sq, promotion=promotion)
+def board_ply(board: chess.Board) -> int:
+    return 2 * (board.fullmove_number - 1) + (board.turn == chess.BLACK)
 
 def encode_chess(board: chess.Board, history: Sequence[NDArray[np.uint8]]) -> NDArray[np.uint8]:
     """
-    Accepts optional repetition history.
-    repetitions[t] is the number of repetitions of pos t halfmoves ago.
+    Accepts repetition history, where repetitions[t] is the number of repetitions of pos t halfmoves ago.
     """
     # AlphaZero encoding
     # P1 pieces (6)
@@ -132,13 +164,14 @@ def encode_chess(board: chess.Board, history: Sequence[NDArray[np.uint8]]) -> ND
     # Total move count (1); whole plane encoded
     # No progress clock (1); whole plane encoded
 
-    is_white = board.turn
+    turn = board.turn
+    is_white = turn == chess.WHITE
     features = np.zeros((CHESS_INPUT_CHANNELS, 8, 8), dtype=np.uint8)
 
     for t, frame in enumerate(history[:TIME_STEPS]):
         dst = features[t * TIME_STEP_LAYERS:(t + 1) * TIME_STEP_LAYERS]
 
-        if board.turn == chess.WHITE:
+        if is_white:
             dst[:] = frame
         else:
             # Swap piece ownership and mirror ranks.
@@ -147,211 +180,36 @@ def encode_chess(board: chess.Board, history: Sequence[NDArray[np.uint8]]) -> ND
             dst[12:14] = frame[12:14]
 
     # Auxiliary planes
-    for plane, color, kingside in (
-        (AUXILIARY_PLANE_START, is_white, True), (AUXILIARY_PLANE_START + 1, is_white, False),
-        (AUXILIARY_PLANE_START + 2, not is_white, True), (AUXILIARY_PLANE_START + 3, not is_white, False),
-    ):
-        has_right = (
-            board.has_kingside_castling_rights(color)
-            if kingside else board.has_queenside_castling_rights(color)
-        )
-        features[plane, :, :] = has_right
-
-    features[AUXILIARY_PLANE_START + 4, 0, 0] = board.ply() >> 8
-    features[AUXILIARY_PLANE_START + 4, 0, 1] = board.ply() & 0xFF
-    features[AUXILIARY_PLANE_START + 5, :, :] = board.halfmove_clock
+    aux = features[AUXILIARY_PLANE_START:]
+    rights = board.castling_rights
+    for side, color in enumerate((turn, ~turn)):
+        aux[2 * side].fill(rights.kingside(color))
+        aux[2 * side + 1].fill(rights.queenside(color))
+    aux[4, 0, :2] = divmod(board_ply(board), 256)
+    aux[5].fill(board.halfmove_clock)
 
     return features
 
-def piece_planes(board: chess.Board, perspective_white: bool) -> np.ndarray:
-    # Planes 1-6:  perspective player's pieces.
-    # Planes 7-12: opponent's pieces.
-    colors = (
-        (chess.WHITE, chess.BLACK)
-        if perspective_white
-        else (chess.BLACK, chess.WHITE)
-    )
+def _piece_masks(board: chess.Board) -> NDArray[np.uint64]:
+    return np.array([int(board[piece]) for piece in _PIECES], dtype="<u8")
 
-    masks = np.array(
-        [
-            board.pieces_mask(piece_type, color)
-            for color in colors
-            for piece_type in range(1, 7)
-        ],
-        dtype="<u8",
-    )
+def _frame_from_masks(masks: NDArray[np.uint64], occurrences: int) -> NDArray[np.uint8]:
+    frame = np.empty((TIME_STEP_LAYERS, 8, 8), dtype=np.uint8)
 
-    # Bit 0 is a1; reshape into [plane, rank, file].
-    planes = np.unpackbits(
-        masks.view(np.uint8).reshape(12, 8),
-        axis=1,
-        bitorder="little",
-    ).reshape(12, 8, 8)
+    frame[:12] = np.unpackbits(masks.view(np.uint8), bitorder="little").reshape(12, 8, 8)
+    frame[12].fill(occurrences >= 2)
+    frame[13].fill(occurrences >= 3)
+    frame.flags.writeable = False
 
-    # Mirror vertically if Black so that the perspective player is always on the bottom.
-    return planes if perspective_white else planes[:, ::-1, :]
-
+    return frame
 
 def history_frame(board: chess.Board, occurrences: int) -> NDArray[np.uint8]:
-    frame = np.zeros((TIME_STEP_LAYERS, 8, 8), dtype=np.uint8)
-    frame[:12] = piece_planes(board, perspective_white=True)
+    frame = np.empty((TIME_STEP_LAYERS, 8, 8), dtype=np.uint8)
+    masks = np.array([int(board[piece]) for piece in _PIECES], dtype="<u8")
+    frame[:12] = np.unpackbits(masks.view(np.uint8), bitorder="little").reshape(12, 8, 8)
     frame[12].fill(occurrences >= 2)
     frame[13].fill(occurrences >= 3)
 
     # Frames are shared between nodes.
     frame.flags.writeable = False
     return frame
-
-def initial_history(board: chess.Board) -> tuple[NDArray[np.uint8], ...]:
-    """Initialise a root's history, preserving full repetition context."""
-    historic = board.copy(stack=True)
-    frames = []
-
-    for _ in range(TIME_STEPS):
-        occurrences = (
-            3 if historic.is_repetition(3)
-            else 2 if historic.is_repetition(2)
-            else 1
-        )
-        frames.append(history_frame(historic, occurrences))
-
-        if not historic.move_stack:
-            break
-        historic.pop()
-
-    return tuple(frames)
-
-@dataclass(slots=True)
-class CachedPosition:
-    history: tuple[np.ndarray, ...]  # Newest first, fixed White perspective
-    children: dict[chess.Move, "CachedPosition"] = field(default_factory=dict)
-
-class RepetitionTracker:
-    def __init__(self, board: chess.Board):
-        key = board._transposition_key()
-        self.key_counts: Counter[Hashable] = Counter()
-        self.key_counts.update((key, ))
-        self.key_stack: list[Hashable] = [key]
-
-        self.curr_cache = CachedPosition(history=initial_history(board))
-        self.cache_stack: list[CachedPosition] = []
-
-        # Initialize at the beginning of the tracked history.
-        if board.move_stack:
-            switchyard: list[chess.Move] = []
-            while board.move_stack:
-                move = board.pop()
-                switchyard.append(move)
-
-                if board.is_irreversible(move):
-                    break
-
-                key = board._transposition_key()
-                self.key_counts.update((key, ))
-                self.key_stack.append(key)
-
-            while switchyard:
-                board.push(switchyard.pop())
-
-            self.key_stack = self.key_stack[::-1]
-
-        # Number of distinct positions seen at least twice.
-        self.num_repeated = sum(count >= 2 for count in self.key_counts.values())
-        self.board = board
-
-    def push(self, move: chess.Move) -> None:
-        self.board.push(move)
-
-        key = self.board._transposition_key()
-        count = self.key_counts.get(key, 0)
-
-        if count == 1:
-            self.num_repeated += 1
-
-        self.key_counts[key] = count + 1
-        self.key_stack.append(key)
-
-        child = self.curr_cache.children.get(move)
-        if child is None:
-            # Previously untraversed move
-            frame = history_frame(self.board, self.key_counts[self.key_stack[-1]])
-            child = CachedPosition(history=(frame, *self.curr_cache.history[:7]))
-            self.curr_cache.children[move] = child
-
-        self.cache_stack.append(self.curr_cache)
-        self.curr_cache = child
-
-    def pop(self) -> chess.Move:
-        if not self.cache_stack:
-            raise IndexError("Cannot pop before the tracker's initial position")
-
-        key = self.key_stack.pop()
-        count = self.key_counts[key]
-
-        if count == 2:
-            self.num_repeated -= 1
-
-        if count == 1:
-            del self.key_counts[key]
-        else:
-            self.key_counts[key] = count - 1
-
-        self.curr_cache = self.cache_stack.pop()
-        return self.board.pop()
-
-    def is_threefold(self) -> bool:
-        return self.key_counts[self.key_stack[-1]] >= 3
-
-    def can_claim_threefold(self) -> bool:
-        # Current position already occurred three times.
-        if self.is_threefold():
-            return True
-
-        # Without any repeated position in the history,
-        # no legal move can produce a third occurrence.
-        if self.num_repeated == 0:
-            return False
-
-        # Only when repetitions exist do we need to
-        # investigate next-move claims.
-        for move in self.board.generate_legal_moves():
-            self.board.push(move)
-            try:
-                key = self.board._transposition_key()
-                if self.key_counts.get(key, 0) >= 2:
-                    return True
-            finally:
-                self.board.pop()
-
-        return False
-
-    def purge_cache_except(self, selected_move: chess.Move, purge_keys: bool) -> None:
-        """
-        Discard all child cached positions except the one corresponding to kept_child.
-        Additionally, if given move is irreversible, discard all counts and keys in stack.
-        """
-        kept_child = self.curr_cache.children.get(selected_move)
-        pending = [node for node in self.curr_cache.children.values() if node is not kept_child]
-        self.curr_cache.children = {selected_move: kept_child} if kept_child is not None else {}
-
-        while pending:
-            node = pending.pop()
-            for child in node.children.values():
-                    pending.append(child)
-
-            node.children.clear()
-
-        if purge_keys:
-            self.key_counts.clear()
-            self.key_stack.clear()
-            self.num_repeated = 0
-
-    def clone_for_board(self, board: chess.Board) -> "RepetitionTracker":
-        clone = object.__new__(type(self))
-        clone.board = board
-        clone.key_counts = self.key_counts.copy()
-        clone.key_stack = self.key_stack.copy()
-        clone.num_repeated = self.num_repeated
-        clone.curr_cache = self.curr_cache
-        clone.cache_stack = self.cache_stack.copy()
-        return clone

@@ -30,6 +30,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import bulletchess
 import chess
 import chess.pgn
 import numpy as np

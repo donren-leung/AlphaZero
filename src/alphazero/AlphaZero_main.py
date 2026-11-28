@@ -14,7 +14,7 @@ import numpy as np
 from tqdm import trange
 
 from .batching.NodeBatch import AZ_NodeBatchRequest, AZ_NodeBatchResponse, SparseLegalPolicy
-from .batching.AZ_GameWorker import GameWorker
+from .batching.AZ_GameWorker import CompletedGame, GameWorker
 from .batching.Pool import GPU_AZ_Worker, PoolFactory
 from .batching.Metrics import WorkerMetrics
 from .batching.Queues import mpQueueGen
@@ -45,7 +45,7 @@ def self_play(
 
     game_worker_ps: list[BaseProcess] = []
     eval_worker_ps: list[BaseProcess] = []
-    all_game_results: mpQueueGen[tuple[str, GameBase]] = mpQueueGen(ctx)
+    all_game_results: mpQueueGen[CompletedGame] = mpQueueGen(ctx)
 
     # N queues for each game_worker --- sending to ---> ALL eval_workers
     request_queues: list[mpQueueGen[AZ_NodeBatchRequest | None]] = [
@@ -97,14 +97,9 @@ def self_play(
     # Collect all game results and return in sorted order for reproducibility.
     examples_by_game: dict[str, list[tuple[CompactRepr, SparseLegalPolicy, int]]] = {}
     for _ in range(expecting_results):
-        game_id, game = all_game_results.get()
+        game_id, examples = all_game_results.get()
         counter.increment()
-        examples_by_game[game_id] = list(zip(
-            game.history['states'],
-            game.history['MCTS_results'],
-            game.history['outcome'],
-            strict=True
-        ))
+        examples_by_game[game_id] = examples
 
     memory = [
         example
