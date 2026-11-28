@@ -33,7 +33,8 @@ def self_play(
          TARGET_GAME_WORKERS: int,
          GAME_WORKER_GAMES: int,
          model_args: dict,
-         RANDOM_SEED: int
+         RANDOM_SEED: int,
+         iteration: int
     ) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
     ctx = mp.get_context("spawn")
     assert torch.cuda.is_available(), "GPU is not available."
@@ -78,7 +79,8 @@ def self_play(
                                  metrics_queue=worker_metrics_queue,
                                  worker_id=i,
                                  MCTS_factory=MCTS_factory,
-                                 random_seed=RANDOM_SEED)
+                                 random_seed=RANDOM_SEED,
+                                 iteration=iteration)
         p = ctx.Process(target=game_worker.run, name=f"GameWorker_{i}")
         game_worker_ps.append(p)
 
@@ -92,11 +94,24 @@ def self_play(
     metrics_daemon_thread = Thread(target=metrics_daemon, args=(metrics_stop_event, worker_metrics_queues, eval_metrics_queue, counter, expecting_results), daemon=True)
     metrics_daemon_thread.start()
 
-    memory: list[tuple[CompactRepr, SparseLegalPolicy, int]] = []
+    # Collect all game results and return in sorted order for reproducibility.
+    examples_by_game: dict[str, list[tuple[CompactRepr, SparseLegalPolicy, int]]] = {}
     for _ in range(expecting_results):
-        _, game = all_game_results.get()
+        game_id, game = all_game_results.get()
         counter.increment()
-        memory.extend(zip(game.history['states'], game.history['MCTS_results'], game.history['outcome'], strict=True))
+        examples_by_game[game_id] = list(zip(
+            game.history['states'],
+            game.history['MCTS_results'],
+            game.history['outcome'],
+            strict=True
+        ))
+
+    memory = [
+        example
+        for game_id in sorted(examples_by_game)
+        for example in examples_by_game[game_id]
+    ]
+    del examples_by_game
 
     for i, game_worker_p in enumerate(game_worker_ps):
         game_worker_p.join()
@@ -215,12 +230,21 @@ class AlphaZero:
                   PROCESSES: int,
                   TARGET_GAME_WORKERS: int,
                   GAME_WORKER_GAMES: int,
-                  RANDOM_SEED: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
+                  RANDOM_SEED: int,
+                  iteration: int) -> list[tuple[CompactRepr, SparseLegalPolicy, int]]:
         worker_args = {**self.model_args, "state_dict": self.model.state_dict()}
-        return self_play(GAME_TYPE, ROLLOUTS, PROCESSES, TARGET_GAME_WORKERS, GAME_WORKER_GAMES, worker_args, RANDOM_SEED)
+        return self_play(
+            GAME_TYPE, ROLLOUTS,
+            PROCESSES, TARGET_GAME_WORKERS,
+            GAME_WORKER_GAMES, worker_args,
+            RANDOM_SEED, iteration
+        )
 
-    def train(self, GAME_TYPE: type[GameBase[GameStateBase]], memory: list[tuple[CompactRepr, SparseLegalPolicy, int]]):
-        random.shuffle(memory)
+    def train(self,
+              GAME_TYPE: type[GameBase[GameStateBase]],
+              memory: list[tuple[CompactRepr, SparseLegalPolicy, int]],
+              shuffle_rng: random.Random) -> None:
+        shuffle_rng.shuffle(memory)
         for batchIdx in trange(0, len(memory), self.args.batch_size, mininterval=2.5, desc="Training"):
             sample = memory[batchIdx:batchIdx + self.args.batch_size]
 
@@ -260,14 +284,17 @@ class AlphaZero:
                 self.args.processes,
                 self.args.game_workers,
                 self.args.games_per_worker,
-                self.args.seed
+                self.args.seed,
+                iteration
             )
 
             self.model.to("cuda")
             self.move_optimizer_state("cuda")
             self.model.train()
+
+            shuffle_rng = random.Random(f"training:{self.args.seed}:{iteration}")
             for epoch in trange(self.args.epochs):
-                self.train(self.args.game_type,memory)
+                self.train(self.args.game_type, memory, shuffle_rng)
 
             torch.save(
                 self.model.state_dict(),
@@ -293,8 +320,11 @@ def print_cuda_memory(label: str):
 
 def main():
     args = parse_args()
+
     model_args = training_model_args(args)
+    torch.manual_seed(args.seed)
     model = create_model(**model_args)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=model_args["learning_rate"], weight_decay=model_args["weight_decay"])
 
     az = AlphaZero(args, model, optimizer, model_args)

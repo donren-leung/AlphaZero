@@ -36,13 +36,15 @@ class GameWorker(Generic[GameStateT], object):
                  out_queue: mpQueueGen[AZ_NodeBatchRequest | None],
                  metrics_queue: mpQueueGen[WorkerMetrics],
                  worker_id: int, MCTS_factory: MCTS_Factory,
-                 random_seed: int):
+                 random_seed: int,
+                 iteration: int):
         self.game_type = game_type
         self.num_games = num_games
 
         self.worker_id = worker_id
         self.MCTS_factory = MCTS_factory
         self.random_seed = random_seed
+        self.iteration = iteration
 
         # Threading
         # Multiprocess stuff
@@ -311,7 +313,7 @@ class GameWorker(Generic[GameStateT], object):
 
     def run_game(self, thread_id: int, game: GameBase[GameStateT]) -> None:
         logging.info(f"thread {thread_id} started")
-        rng = np.random.default_rng([self.random_seed, self.worker_id, thread_id])
+        rng = np.random.default_rng([self.iteration, self.random_seed, self.worker_id, thread_id])
 
         fast = False
         previous_root = None
