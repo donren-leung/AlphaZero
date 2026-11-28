@@ -97,14 +97,9 @@ def self_play(
     # Collect all game results and return in sorted order for reproducibility.
     examples_by_game: dict[str, list[tuple[CompactRepr, SparseLegalPolicy, int]]] = {}
     for _ in range(expecting_results):
-        game_id, game = all_game_results.get()
+        game_id, examples = all_game_results.get()
         counter.increment()
-        examples_by_game[game_id] = list(zip(
-            game.history['states'],
-            game.history['MCTS_results'],
-            game.history['outcome'],
-            strict=True
-        ))
+        examples_by_game[game_id] = examples
 
     memory = [
         example

@@ -168,7 +168,7 @@ def _finish_chess_game(output):
     mate = game.parse_move_str("Qh4#")
     factory = MCTS_Factory(4)
     factory.dirichlet_epsilon = 0
-    worker = GameWorker(ChessGame, num_games=1, worker_id=0, random_seed=1, MCTS_factory=factory,
+    worker = GameWorker(ChessGame, num_games=1, worker_id=0, random_seed=1, iteration=0, MCTS_factory=factory,
                         in_queue=Mock(), out_queue=Mock(), output_games=output, metrics_queue=Mock())
     worker.metrics_lock = Lock()
 
