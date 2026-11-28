@@ -28,7 +28,7 @@ jobs:
                   print(f"{name}=={version}")
           PY
           export PIP_CONSTRAINT="$RUNNER_TEMP/constraints.txt"
-          python -m pip install -e . ".[pgn]" pytest mypy types-tqdm==4.70.0.20260906 \
+          python -m pip install -e ".[pgn]" pytest mypy types-tqdm==4.70.0.20260906 \
             --find-links https://download.pytorch.org/whl/cpu/torch/
 
       - name: Run pytest
