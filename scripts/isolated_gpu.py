@@ -39,6 +39,7 @@ import torch
 from alphazero.batching.NodeBatch import AZ_NodeRequest, AZ_NodeBatchRequest
 from alphazero.batching.Pool import GPU_AZ_Worker
 from alphazero.games.Chess import ChessState
+from alphazero.games.ChessUtils import board_ply
 from alphazero.models.model import create_model
 
 
@@ -104,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def sample_board(game: chess.pgn.Game, rng: random.Random) -> chess.Board | None:
+def sample_board(game: chess.pgn.Game, rng: random.Random) -> ChessState | None:
     """A random permutation makes the first eligible ply uniform among eligible plies.
 
     Usually only one candidate needs checking, avoiding expensive draw-claim
@@ -114,11 +115,12 @@ def sample_board(game: chess.pgn.Game, rng: random.Random) -> chess.Board | None
     candidates = list(range(1, len(moves) + 1))
     rng.shuffle(candidates)
     for ply in candidates:
-        board = game.board()
+        board = bulletchess.Board.from_fen(game.board().fen())
         for move in moves[:ply]:
-            board.push(move)
-        if not ChessState(board).get_value_and_terminated()[1]:
-            return board
+            board.apply(bulletchess.Move.from_uci(move.uci()))
+        state = ChessState(board)
+        if not state.get_value_and_terminated()[1]:
+            return state
     return None
 
 
@@ -143,16 +145,16 @@ def load_requests(path: Path, count: int, seed: int) -> tuple[list[AZ_NodeReques
             if not root.is_valid():
                 stats["malformed"] += 1
                 continue
-            board = sample_board(game, rng)
-            if board is None:
+            state = sample_board(game, rng)
+            if state is None:
                 stats["no_eligible_position"] += 1
                 continue
-            state = ChessState(board)
-            player = 1 if board.turn == chess.WHITE else -1
+            board = state.board
+            player = 1 if board.turn == bulletchess.WHITE else -1
             request_id = len(requests)
             requests.append(AZ_NodeRequest(request_id, player, state.get_legal_actions(), state.encode_for_model(player)))
             samples.append({"request_id": request_id, "game_number": stats["games_read"],
-                            "ply": board.ply(), "history_plies": len(board.move_stack)})
+                            "ply": board_ply(board), "history_plies": len(board.history)})
             if len(requests) % 100 == 0:
                 print(f"Prepared {len(requests)}/{count} positions", flush=True)
     rng.shuffle(requests)

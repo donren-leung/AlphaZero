@@ -3,6 +3,7 @@ Tests for the ChessState/ChessGame wrappers.
 """
 import io
 
+import bulletchess
 import chess
 import chess.pgn
 import numpy as np
@@ -10,6 +11,9 @@ import pytest
 
 from alphazero.games.Chess import ChessGame, ChessState
 from alphazero.games.ChessUtils import CHESS_ACTION_SIZE, encode_move
+
+from chess_reference import native_board, reference_action
+
 
 def _player(board: chess.Board) -> int:
     return 1 if board.turn == chess.WHITE else -1
@@ -26,11 +30,11 @@ def _player(board: chess.Board) -> int:
 )
 def test_legal_mask_matches_codec_exactly(fen: str) -> None:
     board = chess.Board(fen)
-    state = ChessState(board)
+    state = ChessState(native_board(board))
     mask = state.get_legal_actions()
 
     expected_actions = {
-        encode_move(board, move, _player(board)) for move in board.legal_moves
+        reference_action(board, move, _player(board)) for move in board.legal_moves
     }
     assert mask.shape == (CHESS_ACTION_SIZE,)
     assert mask.dtype == np.dtype(np.bool_)
@@ -38,10 +42,10 @@ def test_legal_mask_matches_codec_exactly(fen: str) -> None:
     assert np.count_nonzero(mask) == board.legal_moves.count()
 
 def test_next_state_copy_does_not_mutate_original_board() -> None:
-    state = ChessState(chess.Board())
+    state = ChessState(bulletchess.Board())
     original_fen = state.board.fen()
     original_board = state.board
-    action = encode_move(original_board, chess.Move.from_uci("e2e4"), 1)
+    action = encode_move(original_board, bulletchess.Move.from_uci("e2e4"), 1)
 
     next_state = state.get_next_state(action, player=1, copy=True)
 
@@ -49,24 +53,24 @@ def test_next_state_copy_does_not_mutate_original_board() -> None:
     assert state.board.fen() == original_fen
     assert next_state is not state
     assert next_state.board is not original_board
-    assert next_state.board.peek().uci() == "e2e4"
-    assert next_state.board.turn == chess.BLACK
+    assert next_state.board.history[-1].uci() == "e2e4"
+    assert next_state.board.turn == bulletchess.BLACK
 
 def test_next_state_without_copy_mutates_original_board() -> None:
-    state = ChessState(chess.Board())
+    state = ChessState(bulletchess.Board())
     original_board = state.board
-    action = encode_move(original_board, chess.Move.from_uci("e2e4"), 1)
+    action = encode_move(original_board, bulletchess.Move.from_uci("e2e4"), 1)
 
     next_state = state.get_next_state(action, player=1, copy=False)
 
     assert next_state.board is original_board
-    assert original_board.peek().uci() == "e2e4"
-    assert original_board.turn == chess.BLACK
+    assert original_board.history[-1].uci() == "e2e4"
+    assert original_board.turn == bulletchess.BLACK
 
 def test_next_state_rejects_wrong_player() -> None:
-    state = ChessState(chess.Board())
+    state = ChessState(bulletchess.Board())
     initial_fen = state.board.fen()
-    legal_action = encode_move(state.board, chess.Move.from_uci("e2e4"), 1)
+    legal_action = encode_move(state.board, bulletchess.Move.from_uci("e2e4"), 1)
 
     with pytest.raises(AssertionError):
         state.get_next_state(legal_action, player=-1)
@@ -117,44 +121,44 @@ def test_state_value_and_termination_after_move(
     assert move in board.legal_moves
 
     player = _player(board)
-    action = encode_move(board, move, player)
-    next_state = ChessState(board).get_next_state(action, player)
+    action = reference_action(board, move, player)
+    next_state = ChessState(native_board(board)).get_next_state(action, player)
 
-    assert next_state.board.peek() == move
+    assert next_state.board.history[-1].uci() == move.uci()
     assert next_state.get_value_and_terminated() == expected
 
 def test_threefold_repetition_is_claimable_draw() -> None:
     board = chess.Board()
     assert not board.can_claim_threefold_repetition()
-    assert ChessState(board).get_value_and_terminated() == (0, False)
+    assert ChessState(native_board(board)).get_value_and_terminated() == (0, False)
 
     for _ in range(2):
         for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
             board.push_san(san)
 
     assert board.can_claim_threefold_repetition()
-    assert ChessState(board).get_value_and_terminated() == (0, True)
+    assert ChessState(native_board(board)).get_value_and_terminated() == (0, True)
 
 def test_fifty_move_rule_is_claimable_draw() -> None:
     # White cannot claim 50-move rule yet, since even if he plays a move, black still has the right to play his 50th move.
     board = chess.Board("4k3/8/8/8/8/8/8/R3K3 w Q - 98 1")
     assert not board.can_claim_fifty_moves()
-    assert ChessState(board).get_value_and_terminated() == (0, False)
+    assert ChessState(native_board(board)).get_value_and_terminated() == (0, False)
 
     # In the same position, black can claim 50-move rule by announcing a non-zeroing move that would tick over to 100 half-moves.
     board = chess.Board("4k3/8/8/8/8/8/8/R3K3 b Q - 99 1")
     assert board.can_claim_fifty_moves()
-    assert ChessState(board).get_value_and_terminated() == (0, True)
+    assert ChessState(native_board(board)).get_value_and_terminated() == (0, True)
 
     # An exceptional position to the above case: white's king is trapped in the corner and must push his pawn, resetting the clock.
     board = chess.Board("8/8/6k1/4p3/8/1q2P3/8/K7 w - - 99 1")
     assert not board.can_claim_fifty_moves()
-    assert ChessState(board).get_value_and_terminated() == (0, False)
+    assert ChessState(native_board(board)).get_value_and_terminated() == (0, False)
 
 def test_game_move_updates_state_and_changes_starting_board() -> None:
-    start = chess.Board()
+    start = bulletchess.Board()
     game = ChessGame(ChessState(start))
-    move = chess.Move.from_uci("e2e4")
+    move = bulletchess.Move.from_uci("e2e4")
     action = encode_move(start, move, 1)
     initial_fen = start.fen()
 
@@ -162,8 +166,8 @@ def test_game_move_updates_state_and_changes_starting_board() -> None:
     game._make_move(action, 1)
 
     assert start.fen() != initial_fen
-    assert game.state.board.peek() == move
-    assert game.state.board.turn == chess.BLACK
+    assert game.state.board.history[-1] == move
+    assert game.state.board.turn == bulletchess.BLACK
     assert game.get_legal_actions().shape == (CHESS_ACTION_SIZE,)
 
 def test_compact_repr_roundtrip() -> None:
@@ -249,3 +253,32 @@ def test_repr_roundtrip_realgames(pgn_str: str, expected_outcome: tuple[int, boo
         assert np.array_equal(enc1, enc2)
 
     assert chess_game.state.get_value_and_terminated() == expected_outcome
+
+
+def test_compact_record_from_b1fd8df():
+    from alphazero.games.Chess import CompactChessState
+    from chess_reference import old_encode_chess
+
+    compact = CompactChessState(
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 3 3",
+        (1, 2, 2, 2, 2, 3, 3, 3),
+        ("c6b8", "g1f3", "b8c6", "f3g1", "c6b8", "g1f3", "b8c6"),
+    )
+    reference = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Ng1", "Nb8", "Nf3", "Nc6", "Ng1", "Nb8", "Nf3", "Nc6"):
+        reference.push_san(san)
+    np.testing.assert_array_equal(compact.unpack(), old_encode_chess(reference))
+    assert ChessState(native_board(reference)).to_compact_repr() == compact
+
+
+def test_main_cli_retries_then_reports_mate():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alphazero.main", "--both-human"],
+        input="junk\nf3\ne7e5\ng4\nQh4#\n", text=True, capture_output=True, check=True, timeout=45,
+    )
+    assert "Error:" in result.stdout
+    assert "legal moves" in result.stdout
+    assert "Player -1 won!" in result.stdout
